@@ -35,6 +35,7 @@ export async function findRepoRoot(startDir = process.cwd()) {
 export function getOpencodePaths(repoRoot) {
   const root = path.join(repoRoot, '.opencode');
   const memoryRoot = path.join(root, 'memory');
+  const packsRoot = path.join(root, 'packs');
 
   return {
     root,
@@ -48,6 +49,9 @@ export function getOpencodePaths(repoRoot) {
     teamsDir: path.join(root, 'teams'),
     teamTemplatesDir: path.join(root, 'teams', 'templates'),
     remoteDir: path.join(root, 'remote'),
+    packsDir: packsRoot,
+    packInvocationsDir: path.join(packsRoot, 'invocations'),
+    packHistory: path.join(packsRoot, 'history.ndjson'),
     memoryDir: memoryRoot,
     memoryIndex: path.join(memoryRoot, 'MEMORY.md'),
     memoryTopicsDir: path.join(memoryRoot, 'topics'),
@@ -65,6 +69,8 @@ export async function ensureStateLayout(repoRoot) {
   await fs.mkdir(paths.teamsDir, { recursive: true });
   await fs.mkdir(paths.teamTemplatesDir, { recursive: true });
   await fs.mkdir(paths.remoteDir, { recursive: true });
+  await fs.mkdir(paths.packsDir, { recursive: true });
+  await fs.mkdir(paths.packInvocationsDir, { recursive: true });
   await fs.mkdir(paths.memoryDir, { recursive: true });
   await fs.mkdir(paths.memoryTopicsDir, { recursive: true });
   await fs.mkdir(paths.memoryTeamDir, { recursive: true });
@@ -73,6 +79,7 @@ export async function ensureStateLayout(repoRoot) {
   await ensureJsonFile(paths.activity, { lastTouchedAt: null, source: null, meta: {} });
   await ensureJsonFile(paths.jobs, defaultJobsState());
   await ensureJsonFile(paths.schedules, defaultSchedulesState());
+  await ensureTextFile(paths.packHistory, '');
   await ensureTextFile(paths.memoryIndex, MEMORY_INDEX_CONTENT);
 
   return paths;

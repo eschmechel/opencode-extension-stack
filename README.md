@@ -81,12 +81,19 @@ Run pack commands with `pnpm run packs -- ...`.
 
 - `/packs list`
 - `/packs show <pack>`
+- `/packs examples <pack>`
 - `/packs contract <pack>`
 - `/packs render <pack> <request> [--context <text>] [--constraint <text>] [--json]`
+- `/packs execute <pack> <request> [--context <text>] [--constraint <text>] [--channel <local|remote>] [--json]`
+- `/packs complete <invocationId> (--output-json <json> | --output-file <path>) [--json]`
+- `/packs invocation <invocationId>`
+- `/packs history [limit] [--pack <pack>] [--action <action>]`
 - `/packs validate <pack> <json>`
 - `/ultraplan <request>`
 - `/review <request>`
 - `/review-remote <request>`
+- `/triage <request>`
+- `/handoff <request>`
 
 Run remote bridge commands with `pnpm run bridge -- ...`.
 
@@ -132,7 +139,9 @@ pnpm run memory -- /memory search retryAt
 pnpm run memory -- /memory add "Release team keeps worker notes separate" --team release-team --topic workers --run <run-id>
 pnpm run packs -- /packs list
 pnpm run packs -- /packs show review
+pnpm run packs -- /packs examples handoff
 pnpm run packs -- /ultraplan "Design a safe rollout plan"
+pnpm run packs -- /packs execute triage "Workers stopped after the last runtime change" --channel remote
 pnpm run packs -- /packs render review-remote "Review remote branch changes" --context "Snapshot attached" --json
 pnpm run bridge -- /remote enqueue "summarize open failures" --requested-by mobile
 pnpm run bridge -- /remote approve <remote-id>
@@ -247,9 +256,15 @@ Each run directory can contain:
 
 - packs are reusable prompt definitions with explicit agent presets and model defaults
 - each pack exposes a structured JSON output contract for automation-friendly validation
+- packs now store invocation packets and append-only history under `.opencode/packs/`
+- `/packs execute` prepares a durable execution/handoff packet for local or remote follow-up
+- `/packs complete` validates a returned JSON payload against the selected pack contract and records the outcome
 - `/ultraplan` renders a planning pack focused on assumptions, steps, and validation
 - `/review` renders a findings-first review pack aligned with the repo review style
 - `/review-remote` renders an async approval/handoff review packet for remote workflows
+- `/triage` classifies incoming work by category, priority, and next actions
+- `/handoff` prepares a concise continuation packet for another human or agent
+- pack definitions now include validated sample inputs/outputs for automation and documentation
 - `/packs validate` checks a JSON output payload against the selected pack contract
 
 ## Remote Behavior
