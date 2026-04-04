@@ -185,6 +185,9 @@ The first command bootstrap creates repo-local state under `.opencode/`:
 - `.opencode/runs/`
 - `.opencode/workers/`
 - `.opencode/teams/`
+- `.opencode/packs/`
+- `.opencode/packs/invocations/`
+- `.opencode/packs/history.ndjson`
 - `.opencode/memory/MEMORY.md`
 - `.opencode/memory/topics/`
 - `.opencode/memory/team/`
@@ -277,6 +280,8 @@ Each run directory can contain:
 - each pack exposes a structured JSON output contract for automation-friendly validation
 - packs now store invocation packets and append-only history under `.opencode/packs/`
 - `/packs ui` serves a local browser UI for pack browse, input building, contract inspection, history, and remote handoff preview
+- `/packs show`, `/packs contract`, and `/packs examples` expose pack metadata, machine contracts, and curated sample payloads
+- `/packs invocation` and `/packs history` let you inspect durable pack lifecycle state after preparation/completion
 - `/packs execute` prepares a durable execution/handoff packet for local or remote follow-up
 - `/packs complete` validates a returned JSON payload against the selected pack contract and records the outcome
 - `/ultraplan` renders a planning pack focused on assumptions, steps, and validation
