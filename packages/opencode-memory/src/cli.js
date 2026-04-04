@@ -63,8 +63,18 @@ async function runMemory(subcommand, args) {
       printKeyValue('active', result.summary.activeCount);
       printKeyValue('stale', result.summary.staleCount);
       for (const entry of result.entries) {
-        console.log(`- ${entry.memoryId}${entry.stale ? ` [stale:${entry.staleReason}]` : ''}`);
+        const flags = [];
+        if (entry.entryType === 'consolidated') {
+          flags.push('consolidated');
+        }
+        if (entry.stale) {
+          flags.push(`stale:${entry.staleReason}`);
+        }
+        console.log(`- ${entry.memoryId}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}`);
         console.log(`  ${entry.summary}`);
+        if (entry.replacedByMemoryId) {
+          console.log(`  replaced by: ${entry.replacedByMemoryId}`);
+        }
         for (const evidence of entry.evidence) {
           if (evidence.kind === 'run' && evidence.runId) {
             console.log(`  evidence run: ${evidence.runId}`);
@@ -116,6 +126,8 @@ async function runMemory(subcommand, args) {
       printKeyValue('entries checked', result.entriesChecked);
       printKeyValue('stale marked', result.staleMarked);
       printKeyValue('duplicates compacted', result.duplicatesCompacted);
+      printKeyValue('consolidated created', result.consolidatedCreated);
+      printKeyValue('entries consolidated', result.entriesConsolidated);
       printKeyValue('index', result.indexPath);
       return;
     }

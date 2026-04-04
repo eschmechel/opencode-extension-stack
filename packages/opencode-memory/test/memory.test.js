@@ -186,6 +186,54 @@ test('memoryCompact marks older duplicate memories stale without deleting them',
   assert.equal(topicView.entries.some((entry) => entry.staleReason === 'compacted_duplicate'), true);
 });
 
+test('memoryCompact creates one consolidated entry for busy topics and stays idempotent', async () => {
+  const repoRoot = await createTempRepo();
+  await writeRunArtifact(repoRoot, 'run_consolidate_one');
+  await writeRunArtifact(repoRoot, 'run_consolidate_two');
+  await writeRunArtifact(repoRoot, 'run_consolidate_three');
+
+  await memoryAdd('The queue stores jobs in jobs.json.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_consolidate_one',
+    now: '2026-04-04T12:01:00.000Z',
+  });
+  await memoryAdd('Retries are delayed by retryAt.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_consolidate_two',
+    now: '2026-04-04T12:02:00.000Z',
+  });
+  await memoryAdd('Queue execution respects budget and idle policy.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_consolidate_three',
+    now: '2026-04-04T12:03:00.000Z',
+  });
+
+  const firstCompact = await memoryCompact({ cwd: repoRoot, now: '2026-04-04T12:10:00.000Z' });
+  assert.equal(firstCompact.consolidatedCreated, 1);
+  assert.equal(firstCompact.entriesConsolidated, 3);
+
+  const firstView = await memoryShow('Queue', { cwd: repoRoot });
+  const consolidated = firstView.entries.find((entry) => entry.entryType === 'consolidated');
+  const staleSources = firstView.entries.filter((entry) => entry.staleReason === 'compacted_consolidated');
+
+  assert.notEqual(consolidated, undefined);
+  assert.match(consolidated.summary, /Consolidated topic memory from 3 entries:/);
+  assert.equal(consolidated.sourceMemoryIds.length, 3);
+  assert.equal(staleSources.length, 3);
+  assert.equal(staleSources.every((entry) => entry.replacedByMemoryId === consolidated.memoryId), true);
+  assert.equal(firstView.summary.activeCount, 1);
+
+  const secondCompact = await memoryCompact({ cwd: repoRoot, now: '2026-04-04T12:20:00.000Z' });
+  assert.equal(secondCompact.consolidatedCreated, 0);
+  assert.equal(secondCompact.entriesConsolidated, 0);
+
+  const secondView = await memoryShow('Queue', { cwd: repoRoot });
+  assert.equal(secondView.entries.filter((entry) => entry.entryType === 'consolidated').length, 1);
+});
+
 test('memoryRebuild restores MEMORY.md from topic files', async () => {
   const repoRoot = await createTempRepo();
   const paths = getOpencodePaths(repoRoot);

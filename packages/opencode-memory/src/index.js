@@ -10,6 +10,8 @@ import {
 } from '../../opencode-core/src/index.js';
 
 const MEMORY_TOPIC_VERSION = 1;
+const TOPIC_CONSOLIDATION_MIN_ACTIVE = 3;
+const TOPIC_CONSOLIDATION_SUMMARY_LIMIT = 6;
 
 export async function getMemoryPaths(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
@@ -146,6 +148,9 @@ export async function memoryAdd(note, options = {}) {
       stale: false,
       staleReason: null,
       lastValidatedAt: nowIso,
+      entryType: 'note',
+      sourceMemoryIds: [],
+      replacedByMemoryId: null,
     };
 
     topicFile.entries.push(entry);
@@ -187,6 +192,8 @@ export async function memoryCompact(options = {}) {
     let entriesChecked = 0;
     let staleMarked = 0;
     let duplicatesCompacted = 0;
+    let consolidatedCreated = 0;
+    let entriesConsolidated = 0;
 
     for (const topicFile of topicFiles) {
       let changed = false;
@@ -232,6 +239,14 @@ export async function memoryCompact(options = {}) {
         activeKeys.add(compactKey);
       }
 
+      const consolidation = consolidateActiveTopicEntries(topicFile.topic, entries, nowIso);
+      if (consolidation.changed) {
+        changed = true;
+        staleMarked += consolidation.staleMarked;
+        consolidatedCreated += consolidation.consolidatedCreated;
+        entriesConsolidated += consolidation.entriesConsolidated;
+      }
+
       if (!changed) {
         continue;
       }
@@ -253,6 +268,8 @@ export async function memoryCompact(options = {}) {
       entriesChecked,
       staleMarked,
       duplicatesCompacted,
+      consolidatedCreated,
+      entriesConsolidated,
     };
   });
 }
@@ -352,6 +369,11 @@ function parseTopicEntry(value, topic) {
     stale: Boolean(value.stale),
     staleReason: typeof value.staleReason === 'string' ? value.staleReason : null,
     lastValidatedAt: normalizeNullableIso(value.lastValidatedAt),
+    entryType: value.entryType === 'consolidated' ? 'consolidated' : 'note',
+    sourceMemoryIds: Array.isArray(value.sourceMemoryIds)
+      ? value.sourceMemoryIds.filter((entry) => typeof entry === 'string' && entry.trim())
+      : [],
+    replacedByMemoryId: typeof value.replacedByMemoryId === 'string' ? value.replacedByMemoryId : null,
     evidence,
   };
 }
@@ -406,6 +428,15 @@ function buildTopicSummary(namespacePaths, topicFile) {
 }
 
 async function evaluateEntryStaleState(repoRoot, entry, nowIso) {
+  if (entry.stale && (entry.staleReason === 'compacted_duplicate' || entry.staleReason === 'compacted_consolidated')) {
+    return {
+      stale: true,
+      staleReason: entry.staleReason,
+      lastValidatedAt: nowIso,
+      updatedAt: entry.updatedAt,
+    };
+  }
+
   if (!Array.isArray(entry.evidence) || entry.evidence.length === 0) {
     return {
       stale: true,
@@ -603,6 +634,108 @@ function buildCompactKey(entry) {
     .sort()
     .join('|');
   return `${normalizeSearchText(entry.summary)}::${evidenceKey}`;
+}
+
+function consolidateActiveTopicEntries(topic, entries, nowIso) {
+  const activeNotes = entries.filter((entry) => !entry.stale && entry.entryType !== 'consolidated');
+  if (activeNotes.length < TOPIC_CONSOLIDATION_MIN_ACTIVE) {
+    return {
+      changed: false,
+      staleMarked: 0,
+      consolidatedCreated: 0,
+      entriesConsolidated: 0,
+    };
+  }
+
+  const sourceMemoryIds = activeNotes.map((entry) => entry.memoryId).sort();
+  let consolidatedEntry = entries.find((entry) => (
+    !entry.stale &&
+    entry.entryType === 'consolidated' &&
+    sameStringArray(entry.sourceMemoryIds, sourceMemoryIds)
+  )) ?? null;
+
+  let changed = false;
+  let staleMarked = 0;
+  let consolidatedCreated = 0;
+  let entriesConsolidated = 0;
+
+  if (!consolidatedEntry) {
+    consolidatedEntry = createConsolidatedEntry(topic, activeNotes, nowIso);
+    entries.push(consolidatedEntry);
+    changed = true;
+    consolidatedCreated += 1;
+  }
+
+  for (const entry of activeNotes) {
+    entry.stale = true;
+    entry.staleReason = 'compacted_consolidated';
+    entry.replacedByMemoryId = consolidatedEntry.memoryId;
+    entry.lastValidatedAt = nowIso;
+    entry.updatedAt = nowIso;
+    changed = true;
+    staleMarked += 1;
+    entriesConsolidated += 1;
+  }
+
+  return {
+    changed,
+    staleMarked,
+    consolidatedCreated,
+    entriesConsolidated,
+  };
+}
+
+function createConsolidatedEntry(topic, sourceEntries, nowIso) {
+  const sortedEntries = sortEntriesNewestFirst(sourceEntries);
+  const summaryLines = sortedEntries
+    .slice(0, TOPIC_CONSOLIDATION_SUMMARY_LIMIT)
+    .map((entry) => `- ${entry.summary}`);
+  const remainingCount = Math.max(0, sortedEntries.length - TOPIC_CONSOLIDATION_SUMMARY_LIMIT);
+  const summary = [
+    `Consolidated topic memory from ${sortedEntries.length} entries:`,
+    ...summaryLines,
+    ...(remainingCount > 0 ? [`- ...and ${remainingCount} more entries`] : []),
+  ].join('\n');
+
+  return {
+    ...createMemoryEntry({
+      topic,
+      createdAt: nowIso,
+      evidence: dedupeEvidence(sortedEntries.flatMap((entry) => entry.evidence)),
+      summary,
+    }),
+    updatedAt: nowIso,
+    stale: false,
+    staleReason: null,
+    lastValidatedAt: nowIso,
+    entryType: 'consolidated',
+    sourceMemoryIds: sortedEntries.map((entry) => entry.memoryId).sort(),
+    replacedByMemoryId: null,
+  };
+}
+
+function dedupeEvidence(evidence) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const entry of evidence) {
+    const key = `${entry.kind}:${entry.runId ?? entry.resultPath ?? 'unknown'}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
+function sameStringArray(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
 }
 
 function sortEntriesNewestFirst(entries) {
