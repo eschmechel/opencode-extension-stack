@@ -286,7 +286,7 @@ export async function remoteRevoke(remoteRequestId = '', options = {}) {
       repoRoot,
       revoked,
       skipped,
-      authEnabled: Boolean(authState.apiToken),
+      authEnabled: Boolean(getDefaultBridgeToken(authState)?.token),
     };
   });
 }
@@ -295,14 +295,101 @@ export async function remoteAuth(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const config = await loadConfig(repoRoot);
   const authState = await ensureRemoteAuthState(repoRoot);
+  const defaultToken = getDefaultBridgeToken(authState);
 
   return {
     repoRoot,
-    apiToken: authState.apiToken,
+    apiToken: defaultToken?.token ?? null,
+    defaultTokenId: defaultToken?.tokenId ?? null,
+    tokens: authState.tokens.map(summarizeBridgeToken),
     publicBaseUrl: config.remote.publicBaseUrl,
     approvalTokenTtlSeconds: config.remote.approvalTokenTtlSeconds,
+    telegram: {
+      configured: Boolean(config.remote.telegram.botToken),
+      allowedUserIds: config.remote.telegram.allowedUserIds,
+      apiBaseUrl: config.remote.telegram.apiBaseUrl,
+      webhookSecret: config.remote.telegram.webhookSecret,
+    },
     authPath: getRemotePaths(repoRoot).auth,
   };
+}
+
+export async function remoteAuthCreate(name, options = {}) {
+  const trimmedName = String(name ?? '').trim();
+  if (!trimmedName) {
+    throw new Error('A token name is required for /remote auth create.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+
+  return withRepoLock(repoRoot, async () => {
+    const authState = await ensureRemoteAuthState(repoRoot);
+    const expiresAt = Number.isInteger(options.expiresInSeconds) && options.expiresInSeconds > 0
+      ? new Date(new Date(nowIso).getTime() + (options.expiresInSeconds * 1000)).toISOString()
+      : null;
+    const token = createBridgeTokenRecord(trimmedName, options.session ? 'session' : 'client', nowIso, expiresAt);
+    authState.tokens.push(token);
+    await saveRemoteAuthState(repoRoot, authState);
+    return {
+      repoRoot,
+      tokenId: token.tokenId,
+      token: token.token,
+      kind: token.kind,
+      name: token.name,
+      expiresAt: token.expiresAt,
+    };
+  });
+}
+
+export async function remoteAuthRevoke(tokenId, options = {}) {
+  const trimmedTokenId = String(tokenId ?? '').trim();
+  if (!trimmedTokenId) {
+    throw new Error('A token id is required for /remote auth revoke.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+
+  return withRepoLock(repoRoot, async () => {
+    const authState = await ensureRemoteAuthState(repoRoot);
+    const token = authState.tokens.find((entry) => entry.tokenId === trimmedTokenId);
+    if (!token) {
+      throw new Error(`Remote auth token not found: ${trimmedTokenId}`);
+    }
+    if (token.role === 'default') {
+      throw new Error('Use /remote auth rotate-default to replace the default token instead of revoking it directly.');
+    }
+    token.revokedAt = nowIso;
+    await saveRemoteAuthState(repoRoot, authState);
+    return {
+      repoRoot,
+      tokenId: token.tokenId,
+      revokedAt: token.revokedAt,
+    };
+  });
+}
+
+export async function remoteAuthRotateDefault(options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+
+  return withRepoLock(repoRoot, async () => {
+    const authState = await ensureRemoteAuthState(repoRoot);
+    const current = getDefaultBridgeToken(authState);
+    if (current) {
+      current.revokedAt = nowIso;
+    }
+    const replacement = createBridgeTokenRecord('default', 'client', nowIso, null, { role: 'default' });
+    authState.tokens.push(replacement);
+    await saveRemoteAuthState(repoRoot, authState);
+    return {
+      repoRoot,
+      tokenId: replacement.tokenId,
+      token: replacement.token,
+      rotatedFromTokenId: current?.tokenId ?? null,
+    };
+  });
 }
 
 export async function bridgeServe(options = {}) {
@@ -312,7 +399,7 @@ export async function bridgeServe(options = {}) {
   const port = Number.isInteger(options.port) ? options.port : Number.parseInt(String(options.port ?? '0'), 10) || 0;
 
   const server = http.createServer((request, response) => {
-    handleBridgeHttpRequest(repoRoot, authState, request, response).catch((error) => {
+    handleBridgeHttpRequest(repoRoot, request, response).catch((error) => {
       if (!response.headersSent) {
         writeJsonResponse(response, 500, { error: error instanceof Error ? error.message : String(error) });
       }
@@ -336,7 +423,7 @@ export async function bridgeServe(options = {}) {
     host,
     port: effectivePort,
     baseUrl,
-    apiToken: authState.apiToken,
+    apiToken: getDefaultBridgeToken(authState)?.token ?? null,
     close() {
       return new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -521,10 +608,27 @@ function verifyRemoteActionToken(authState, token, remoteRequestId, action, now)
   return new Date(parsed.expiresAt).getTime() >= new Date(now ?? Date.now()).getTime();
 }
 
-async function handleBridgeHttpRequest(repoRoot, authState, request, response) {
+async function handleBridgeHttpRequest(repoRoot, request, response) {
+  const authState = await ensureRemoteAuthState(repoRoot);
+  const config = await loadConfig(repoRoot);
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   if (request.method === 'GET' && url.pathname === '/health') {
     writeJsonResponse(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') {
+    if (!config.remote.telegram.botToken) {
+      writeJsonResponse(response, 503, { error: 'Telegram bridge is not configured.' });
+      return;
+    }
+    if (!isTelegramWebhookAuthorized(request, config.remote.telegram.webhookSecret)) {
+      writeJsonResponse(response, 401, { error: 'Invalid Telegram webhook secret.' });
+      return;
+    }
+    const update = await readJsonRequestBody(request);
+    const sent = await handleTelegramUpdate(repoRoot, config, authState, config.remote.telegram, update, new Date().toISOString());
+    writeJsonResponse(response, 200, { ok: true, messagesSent: sent });
     return;
   }
 
@@ -544,8 +648,17 @@ async function handleBridgeHttpRequest(repoRoot, authState, request, response) {
     return;
   }
 
-  if (!isAuthorizedRequest(request, authState.apiToken)) {
+  const tokenRecord = await authorizeBridgeRequest(repoRoot, authState, request, new Date().toISOString());
+  if (!tokenRecord) {
     writeJsonResponse(response, 401, { error: 'Missing or invalid bearer token.' });
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/remote/events') {
+    await streamRemoteEvents(repoRoot, request, response, {
+      tokenId: tokenRecord.tokenId,
+      now: new Date().toISOString(),
+    });
     return;
   }
 
@@ -752,12 +865,30 @@ function buildTelegramRevokeMessage(result) {
     : `Revoked remote requests: ${result.revoked.join(', ')}`;
 }
 
-function isAuthorizedRequest(request, apiToken) {
+async function authorizeBridgeRequest(repoRoot, authState, request, now) {
   const header = request.headers.authorization ?? request.headers.Authorization ?? '';
-  if (!apiToken || typeof header !== 'string' || !header.startsWith('Bearer ')) {
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const tokenValue = header.slice('Bearer '.length);
+  const tokenRecord = findAuthorizedBridgeToken(authState, tokenValue, now);
+  if (!tokenRecord) {
+    return null;
+  }
+
+  tokenRecord.lastUsedAt = now;
+  await saveRemoteAuthState(repoRoot, authState);
+  return summarizeBridgeToken(tokenRecord);
+}
+
+function isTelegramWebhookAuthorized(request, expectedSecret) {
+  if (!expectedSecret) {
     return false;
   }
-  return timingSafeEqual(header.slice('Bearer '.length), apiToken);
+
+  const header = request.headers['x-telegram-bot-api-secret-token'] ?? request.headers['X-Telegram-Bot-Api-Secret-Token'] ?? '';
+  return typeof header === 'string' && timingSafeEqual(header, expectedSecret);
 }
 
 async function readJsonRequestBody(request) {
@@ -775,6 +906,75 @@ function writeJsonResponse(response, statusCode, value) {
   response.statusCode = statusCode;
   response.setHeader('content-type', 'application/json; charset=utf-8');
   response.end(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function streamRemoteEvents(repoRoot, request, response, context) {
+  const remotePaths = getRemotePaths(repoRoot);
+  response.statusCode = 200;
+  response.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  response.setHeader('cache-control', 'no-cache, no-transform');
+  response.setHeader('connection', 'keep-alive');
+  response.flushHeaders?.();
+
+  const initial = await remoteStatus('', { cwd: repoRoot, now: context.now });
+  writeSseEvent(response, 'snapshot', {
+    tokenId: context.tokenId,
+    counts: initial.counts,
+    totalRequests: initial.totalRequests,
+  });
+
+  let position = await getFileSize(remotePaths.events);
+  const interval = setInterval(async () => {
+    try {
+      const nextSize = await getFileSize(remotePaths.events);
+      if (nextSize <= position) {
+        return;
+      }
+      const handle = await fs.open(remotePaths.events, 'r');
+      try {
+        const buffer = Buffer.alloc(nextSize - position);
+        await handle.read(buffer, 0, buffer.length, position);
+        position = nextSize;
+        const lines = buffer.toString('utf8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          writeSseEvent(response, 'remote', JSON.parse(line));
+        }
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      // Drop file read errors; the connection will stay alive and retry.
+    }
+  }, 250);
+
+  const heartbeat = setInterval(() => {
+    response.write(': keepalive\n\n');
+  }, 15000);
+
+  const cleanup = () => {
+    clearInterval(interval);
+    clearInterval(heartbeat);
+    response.end();
+  };
+  request.on('close', cleanup);
+  response.on('close', cleanup);
+}
+
+function writeSseEvent(response, event, payload) {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+async function getFileSize(filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.size;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return 0;
+    }
+    throw error;
+  }
 }
 
 function parseOptionalInt(value) {
@@ -858,12 +1058,12 @@ async function saveRemoteState(repoRoot, remoteState) {
 async function ensureRemoteAuthState(repoRoot) {
   const authState = await loadRemoteAuthState(repoRoot);
   let changed = false;
-  if (!authState.apiToken) {
-    authState.apiToken = createSecretToken();
-    changed = true;
-  }
   if (!authState.signingSecret) {
     authState.signingSecret = createSecretToken();
+    changed = true;
+  }
+  if (!getDefaultBridgeToken(authState)) {
+    authState.tokens.push(createBridgeTokenRecord('default', 'client', new Date().toISOString(), null, { role: 'default' }));
     changed = true;
   }
   if (changed) {
@@ -875,10 +1075,17 @@ async function ensureRemoteAuthState(repoRoot) {
 async function loadRemoteAuthState(repoRoot) {
   const paths = getRemotePaths(repoRoot);
   const raw = await readJson(paths.auth, defaultRemoteAuthState());
+  const parsedTokens = Array.isArray(raw.tokens) ? raw.tokens.map(parseBridgeTokenRecord).filter(Boolean) : [];
+  if (parsedTokens.length === 0 && typeof raw.apiToken === 'string' && raw.apiToken.trim()) {
+    parsedTokens.push(createBridgeTokenRecord('default', 'client', new Date().toISOString(), null, {
+      role: 'default',
+      token: raw.apiToken.trim(),
+    }));
+  }
   return {
     version: REMOTE_AUTH_VERSION,
-    apiToken: typeof raw.apiToken === 'string' && raw.apiToken.trim() ? raw.apiToken.trim() : '',
     signingSecret: typeof raw.signingSecret === 'string' && raw.signingSecret.trim() ? raw.signingSecret.trim() : '',
+    tokens: parsedTokens,
   };
 }
 
@@ -886,8 +1093,18 @@ async function saveRemoteAuthState(repoRoot, authState) {
   const paths = getRemotePaths(repoRoot);
   await writeJsonAtomic(paths.auth, {
     version: REMOTE_AUTH_VERSION,
-    apiToken: authState.apiToken,
     signingSecret: authState.signingSecret,
+    tokens: authState.tokens.map((entry) => ({
+      tokenId: entry.tokenId,
+      name: entry.name,
+      role: entry.role,
+      kind: entry.kind,
+      token: entry.token,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+      revokedAt: entry.revokedAt,
+      lastUsedAt: entry.lastUsedAt,
+    })),
   });
 }
 
@@ -924,8 +1141,8 @@ function defaultRemoteState() {
 function defaultRemoteAuthState() {
   return {
     version: REMOTE_AUTH_VERSION,
-    apiToken: createSecretToken(),
     signingSecret: createSecretToken(),
+    tokens: [createBridgeTokenRecord('default', 'client', new Date().toISOString(), null, { role: 'default' })],
   };
 }
 
@@ -934,6 +1151,72 @@ function defaultTelegramState() {
     version: TELEGRAM_STATE_VERSION,
     lastUpdateId: 0,
   };
+}
+
+function createBridgeTokenRecord(name, kind, createdAt, expiresAt = null, options = {}) {
+  return {
+    tokenId: createStableId('bridge_token'),
+    name,
+    role: options.role ?? 'named',
+    kind,
+    token: options.token ?? createSecretToken(),
+    createdAt,
+    expiresAt,
+    revokedAt: null,
+    lastUsedAt: null,
+  };
+}
+
+function parseBridgeTokenRecord(value) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const tokenId = typeof value.tokenId === 'string' && value.tokenId.trim() ? value.tokenId.trim() : createStableId('bridge_token');
+  const token = typeof value.token === 'string' && value.token.trim() ? value.token.trim() : null;
+  if (!token) {
+    return null;
+  }
+
+  return {
+    tokenId,
+    name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : tokenId,
+    role: value.role === 'default' ? 'default' : 'named',
+    kind: value.kind === 'session' ? 'session' : 'client',
+    token,
+    createdAt: normalizeIso(value.createdAt),
+    expiresAt: normalizeNullableIso(value.expiresAt),
+    revokedAt: normalizeNullableIso(value.revokedAt),
+    lastUsedAt: normalizeNullableIso(value.lastUsedAt),
+  };
+}
+
+function summarizeBridgeToken(entry) {
+  return {
+    tokenId: entry.tokenId,
+    name: entry.name,
+    role: entry.role,
+    kind: entry.kind,
+    createdAt: entry.createdAt,
+    expiresAt: entry.expiresAt,
+    revokedAt: entry.revokedAt,
+    lastUsedAt: entry.lastUsedAt,
+  };
+}
+
+function getDefaultBridgeToken(authState) {
+  return authState.tokens.find((entry) => entry.role === 'default' && !entry.revokedAt && !isExpiredToken(entry, new Date().toISOString())) ?? null;
+}
+
+function findAuthorizedBridgeToken(authState, tokenValue, now) {
+  return authState.tokens.find((entry) => (
+    !entry.revokedAt &&
+    !isExpiredToken(entry, now) &&
+    timingSafeEqual(entry.token, tokenValue)
+  )) ?? null;
+}
+
+function isExpiredToken(entry, now) {
+  return Boolean(entry.expiresAt) && new Date(entry.expiresAt).getTime() < new Date(now).getTime();
 }
 
 function parseRemoteState(value) {

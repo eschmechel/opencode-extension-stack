@@ -88,6 +88,7 @@ Run pack commands with `pnpm run packs -- ...`.
 - `/packs complete <invocationId> (--output-json <json> | --output-file <path>) [--json]`
 - `/packs invocation <invocationId>`
 - `/packs history [limit] [--pack <pack>] [--action <action>]`
+- `/packs ui [port] [--host <host>]`
 - `/packs validate <pack> <json>`
 - `/ultraplan <request>`
 - `/review <request>`
@@ -98,12 +99,17 @@ Run pack commands with `pnpm run packs -- ...`.
 Run remote bridge commands with `pnpm run bridge -- ...`.
 
 - `/remote status [id]`
-- `/remote auth`
+- `/remote auth [show]`
+- `/remote auth list`
+- `/remote auth create <name> [--session] [--expires-seconds <n>]`
+- `/remote auth revoke <tokenId>`
+- `/remote auth rotate-default`
 - `/remote enqueue <prompt>`
 - `/remote approve <id>`
 - `/remote revoke [id]`
 - `/remote serve [port] [--host <host>]`
 - `telegram sync [limit]`
+- `telegram webhook-info`
 
 Examples:
 
@@ -145,13 +151,17 @@ pnpm run packs -- /packs show review
 pnpm run packs -- /packs examples handoff
 pnpm run packs -- /ultraplan "Design a safe rollout plan"
 pnpm run packs -- /packs execute triage "Workers stopped after the last runtime change" --channel remote
+pnpm run packs -- /packs ui 4311
 pnpm run packs -- /packs render review-remote "Review remote branch changes" --context "Snapshot attached" --json
 pnpm run bridge -- /remote enqueue "summarize open failures" --requested-by mobile
 pnpm run bridge -- /remote auth
+pnpm run bridge -- /remote auth create ci-bot
+pnpm run bridge -- /remote auth create mobile-session --session --expires-seconds 900
 pnpm run bridge -- /remote serve 8787
 pnpm run bridge -- /remote approve <remote-id>
 pnpm run bridge -- /remote status
 pnpm run bridge -- telegram sync
+pnpm run bridge -- telegram webhook-info
 ```
 
 Supported schedule formats in the current slice:
@@ -266,6 +276,7 @@ Each run directory can contain:
 - packs are reusable prompt definitions with explicit agent presets and model defaults
 - each pack exposes a structured JSON output contract for automation-friendly validation
 - packs now store invocation packets and append-only history under `.opencode/packs/`
+- `/packs ui` serves a local browser UI for pack browse, input building, contract inspection, history, and remote handoff preview
 - `/packs execute` prepares a durable execution/handoff packet for local or remote follow-up
 - `/packs complete` validates a returned JSON payload against the selected pack contract and records the outcome
 - `/ultraplan` renders a planning pack focused on assumptions, steps, and validation
@@ -284,9 +295,13 @@ Each run directory can contain:
 - `/remote revoke` revokes pending approvals and can cancel a still-queued remote job before it starts
 - `/remote status` polls request state and follows the linked Kairos job once approved
 - `/remote serve` exposes a small local HTTP API with bearer-token auth
+- `/remote auth create` issues named client tokens and expiring session tokens for the bridge API
+- `/remote auth rotate-default` rotates the default bearer token without changing request history
 - signed approval/revoke links can be generated for awaiting-approval requests when `remote.publicBaseUrl` is configured
 - prompts beginning with `/review` or `/review-remote` are tagged as remote review handoffs and generate a `review-remote` packet under `.opencode/remote/packets/`
 - `telegram sync` polls Telegram for bridge commands and can relay `/enqueue`, `/status`, `/approve`, and `/revoke`
+- the bridge server also supports `POST /v1/telegram/webhook` when `remote.telegram.webhookSecret` is configured
+- `GET /v1/remote/events` exposes a live SSE stream of remote bridge events
 - when Telegram is configured, remote enqueue/approve/revoke events can push Telegram messages to allowed users
 
 `config.json` now supports:
@@ -319,7 +334,8 @@ Each run directory can contain:
     "telegram": {
       "botToken": null,
       "allowedUserIds": ["123456789"],
-      "apiBaseUrl": "https://api.telegram.org"
+      "apiBaseUrl": "https://api.telegram.org",
+      "webhookSecret": "telegram-webhook-secret"
     }
   },
   "memory": {

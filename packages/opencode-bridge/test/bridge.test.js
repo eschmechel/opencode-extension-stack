@@ -11,6 +11,9 @@ import {
   bridgeServe,
   remoteApprove,
   remoteAuth,
+  remoteAuthCreate,
+  remoteAuthRevoke,
+  remoteAuthRotateDefault,
   remoteEnqueue,
   remoteRevoke,
   remoteStatus,
@@ -195,6 +198,126 @@ test('bridge HTTP API uses bearer auth and signed approval links', async () => {
   }
 });
 
+test('bridge auth supports named tokens, session expiry, and default rotation', async () => {
+  const repoRoot = await createTempRepo();
+  const server = await bridgeServe({ cwd: repoRoot, port: 0 });
+
+  try {
+    const named = await remoteAuthCreate('ci client', { cwd: repoRoot });
+    let response = await fetch(`${server.baseUrl}/v1/remote/status`, {
+      headers: { authorization: `Bearer ${named.token}` },
+    });
+    assert.equal(response.status, 200);
+
+    await remoteAuthRevoke(named.tokenId, { cwd: repoRoot });
+    response = await fetch(`${server.baseUrl}/v1/remote/status`, {
+      headers: { authorization: `Bearer ${named.token}` },
+    });
+    assert.equal(response.status, 401);
+
+    const session = await remoteAuthCreate('mobile session', {
+      cwd: repoRoot,
+      session: true,
+      expiresInSeconds: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    response = await fetch(`${server.baseUrl}/v1/remote/status`, {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    assert.equal(response.status, 401);
+
+    const authBefore = await remoteAuth({ cwd: repoRoot });
+    const rotated = await remoteAuthRotateDefault({ cwd: repoRoot });
+    assert.notEqual(rotated.token, authBefore.apiToken);
+
+    response = await fetch(`${server.baseUrl}/v1/remote/status`, {
+      headers: { authorization: `Bearer ${rotated.token}` },
+    });
+    assert.equal(response.status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test('bridge HTTP API supports Telegram webhook mode with secret validation', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.remote.telegram.botToken = 'telegram-token';
+  config.remote.telegram.allowedUserIds = ['123'];
+  config.remote.telegram.apiBaseUrl = 'https://telegram.example.test';
+  config.remote.telegram.webhookSecret = 'webhook-secret';
+  await saveConfig(repoRoot, config);
+
+  const server = await bridgeServe({ cwd: repoRoot, port: 0 });
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith(server.baseUrl)) {
+      return originalFetch(url, init);
+    }
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/sendMessage')) {
+      return fakeJsonResponse({ ok: true, result: { message_id: 1 } });
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  try {
+    let response = await fetch(`${server.baseUrl}/v1/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ update_id: 1, message: { chat: { id: 123 }, from: { id: 123 }, text: '/enqueue webhook request' } }),
+    });
+    assert.equal(response.status, 401);
+
+    response = await fetch(`${server.baseUrl}/v1/telegram/webhook`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': 'webhook-secret',
+      },
+      body: JSON.stringify({ update_id: 2, message: { chat: { id: 123 }, from: { id: 123 }, text: '/enqueue webhook request' } }),
+    });
+    assert.equal(response.status, 200);
+
+    const status = await remoteStatus('', { cwd: repoRoot });
+    assert.equal(status.requests.length, 1);
+    assert.equal(status.requests[0].requestedBy, 'telegram:123');
+    assert.equal(calls.some((entry) => String(entry.url).endsWith('/sendMessage')), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await server.close();
+  }
+});
+
+test('bridge HTTP API streams SSE remote events', async () => {
+  const repoRoot = await createTempRepo();
+  const server = await bridgeServe({ cwd: repoRoot, port: 0 });
+
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/remote/events`, {
+      headers: { authorization: `Bearer ${server.apiToken}` },
+    });
+    assert.equal(response.status, 200);
+
+    const reader = response.body.getReader();
+    const snapshotChunk = await readSseChunk(reader);
+    assert.match(snapshotChunk, /event: snapshot/);
+
+    await remoteEnqueue('event stream request', {
+      cwd: repoRoot,
+      notifyTelegram: false,
+      now: new Date().toISOString(),
+    });
+
+    const remoteChunk = await readSseChunk(reader, /event: remote/);
+    assert.match(remoteChunk, /remote\.enqueued/);
+    await reader.cancel();
+  } finally {
+    await server.close();
+  }
+});
+
 test('telegramSync relays enqueue commands into remote bridge state', async () => {
   const repoRoot = await createTempRepo();
   const config = await loadConfig(repoRoot);
@@ -328,4 +451,20 @@ function fakeJsonResponse(value) {
       return value;
     },
   };
+}
+
+async function readSseChunk(reader, pattern = /event:/) {
+  let buffer = '';
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += Buffer.from(value).toString('utf8');
+    if (pattern.test(buffer)) {
+      return buffer;
+    }
+  }
+  throw new Error(`Timed out waiting for SSE chunk matching ${pattern}`);
 }

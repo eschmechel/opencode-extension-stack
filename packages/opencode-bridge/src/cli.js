@@ -4,6 +4,9 @@ import {
   bridgeServe,
   remoteApprove,
   remoteAuth,
+  remoteAuthCreate,
+  remoteAuthRevoke,
+  remoteAuthRotateDefault,
   remoteEnqueue,
   remoteRevoke,
   remoteStatus,
@@ -90,12 +93,7 @@ async function runRemote(subcommand, args) {
       return;
     }
     case 'auth': {
-      const result = await remoteAuth();
-      printHeader('Remote auth');
-      printKeyValue('token', result.apiToken);
-      printKeyValue('auth file', result.authPath);
-      printKeyValue('public base url', result.publicBaseUrl ?? '(not configured)');
-      printKeyValue('approval ttl seconds', result.approvalTokenTtlSeconds);
+      await runRemoteAuth(args);
       return;
     }
     case 'enqueue': {
@@ -176,8 +174,73 @@ async function runTelegram(subcommand, args) {
       printKeyValue('last update id', result.lastUpdateId);
       return;
     }
+    case 'webhook-info': {
+      const auth = await remoteAuth();
+      printHeader('Telegram webhook');
+      printKeyValue('url', auth.publicBaseUrl ? `${auth.publicBaseUrl.replace(/\/+$/, '')}/v1/telegram/webhook` : '(set remote.publicBaseUrl first)');
+      printKeyValue('secret', auth.telegram.webhookSecret ?? '(set remote.telegram.webhookSecret)');
+      return;
+    }
     default:
-      throw new Error('Usage: telegram sync [limit]');
+      throw new Error('Usage: telegram sync [limit] | telegram webhook-info');
+  }
+}
+
+async function runRemoteAuth(args) {
+  const subcommand = args[0];
+  switch (subcommand) {
+    case undefined:
+    case 'show': {
+      const result = await remoteAuth();
+      printHeader('Remote auth');
+      printKeyValue('default token', result.apiToken);
+      printKeyValue('default token id', result.defaultTokenId);
+      printKeyValue('auth file', result.authPath);
+      printKeyValue('public base url', result.publicBaseUrl ?? '(not configured)');
+      printKeyValue('approval ttl seconds', result.approvalTokenTtlSeconds);
+      printKeyValue('telegram webhook secret', result.telegram.webhookSecret ?? '(not configured)');
+      return;
+    }
+    case 'list': {
+      const result = await remoteAuth();
+      printHeader(`Remote auth tokens (${result.tokens.length})`);
+      for (const token of result.tokens) {
+        console.log(`- ${token.tokenId} ${token.role}/${token.kind} ${token.name}`);
+        console.log(`  created=${token.createdAt} expires=${token.expiresAt ?? 'never'} revoked=${token.revokedAt ?? 'active'}`);
+      }
+      return;
+    }
+    case 'create': {
+      const parsed = parseAuthCreateArgs(args.slice(1));
+      const result = await remoteAuthCreate(parsed.name, {
+        session: parsed.session,
+        expiresInSeconds: parsed.expiresInSeconds,
+      });
+      printHeader(`Created auth token ${result.tokenId}`);
+      printKeyValue('kind', result.kind);
+      printKeyValue('name', result.name);
+      printKeyValue('token', result.token);
+      printKeyValue('expires', result.expiresAt ?? 'never');
+      return;
+    }
+    case 'revoke': {
+      const tokenId = args[1] ?? '';
+      const result = await remoteAuthRevoke(tokenId);
+      printHeader(`Revoked auth token ${result.tokenId}`);
+      printKeyValue('revoked at', result.revokedAt);
+      return;
+    }
+    case 'rotate-default': {
+      const result = await remoteAuthRotateDefault();
+      printHeader(`Rotated default auth token ${result.tokenId}`);
+      if (result.rotatedFromTokenId) {
+        printKeyValue('rotated from', result.rotatedFromTokenId);
+      }
+      printKeyValue('token', result.token);
+      return;
+    }
+    default:
+      throw new Error('Usage: /remote auth [show] | /remote auth list | /remote auth create <name> [--session] [--expires-seconds <n>] | /remote auth revoke <tokenId> | /remote auth rotate-default');
   }
 }
 
@@ -228,6 +291,32 @@ function parseServeArgs(args) {
   return { host, port };
 }
 
+function parseAuthCreateArgs(args) {
+  const nameParts = [];
+  let session = false;
+  let expiresInSeconds = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--session') {
+      session = true;
+      continue;
+    }
+    if (value === '--expires-seconds') {
+      expiresInSeconds = parseOptionalInt(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    nameParts.push(value);
+  }
+
+  return {
+    name: nameParts.join(' ').trim(),
+    session,
+    expiresInSeconds,
+  };
+}
+
 function parseOptionalInt(value) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -248,12 +337,17 @@ function printKeyValue(key, value) {
 function printHelp() {
   console.log('Usage:');
   console.log('  pnpm run bridge -- /remote status [id]');
-  console.log('  pnpm run bridge -- /remote auth');
+  console.log('  pnpm run bridge -- /remote auth [show]');
+  console.log('  pnpm run bridge -- /remote auth list');
+  console.log('  pnpm run bridge -- /remote auth create <name> [--session] [--expires-seconds <n>]');
+  console.log('  pnpm run bridge -- /remote auth revoke <tokenId>');
+  console.log('  pnpm run bridge -- /remote auth rotate-default');
   console.log('  pnpm run bridge -- /remote enqueue <prompt> [--requested-by <source>] [--kind <kind>]');
   console.log('  pnpm run bridge -- /remote approve <id>');
   console.log('  pnpm run bridge -- /remote revoke [id]');
   console.log('  pnpm run bridge -- /remote serve [port] [--host <host>]');
   console.log('  pnpm run bridge -- telegram sync [limit]');
+  console.log('  pnpm run bridge -- telegram webhook-info');
 }
 
 main().catch((error) => {

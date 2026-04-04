@@ -32,6 +32,7 @@ test('ensureStateLayout creates the expected repo-local files', async () => {
   assert.equal(config.remote.telegram.botToken, null);
   assert.deepEqual(config.remote.telegram.allowedUserIds, []);
   assert.equal(config.remote.telegram.apiBaseUrl, 'https://api.telegram.org');
+  assert.equal(config.remote.telegram.webhookSecret, null);
   assert.equal(config.memory.compact.topicConsolidationMinActive, 3);
   assert.equal(config.memory.compact.contradictionMinSharedTerms, 2);
   assert.equal(config.memory.repair.maxListedEntries, 20);
@@ -65,6 +66,7 @@ test('loadConfig parses memory policy overrides', async () => {
           botToken: 'bot-token',
           allowedUserIds: ['12345'],
           apiBaseUrl: 'https://telegram.example.test',
+          webhookSecret: 'webhook-secret',
         },
       },
     }, null, 2)}\n`,
@@ -79,6 +81,7 @@ test('loadConfig parses memory policy overrides', async () => {
   assert.equal(config.remote.telegram.botToken, 'bot-token');
   assert.deepEqual(config.remote.telegram.allowedUserIds, ['12345']);
   assert.equal(config.remote.telegram.apiBaseUrl, 'https://telegram.example.test');
+  assert.equal(config.remote.telegram.webhookSecret, 'webhook-secret');
   assert.equal(config.memory.compact.topicConsolidationMinActive, 4);
   assert.equal(config.memory.compact.crossTopicMergeMinSharedTerms, 3);
   assert.equal(config.memory.compact.crossTopicMergeMinSimilarity, 0.9);
