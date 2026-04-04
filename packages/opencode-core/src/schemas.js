@@ -17,6 +17,7 @@ export function defaultConfig() {
     budgets: {
       perRunUsd: null,
       perDayUsd: null,
+      perDayRuns: null,
     },
     repos: {
       allowUnattended: ['.'],
@@ -30,6 +31,10 @@ export function defaultConfig() {
     },
     notifications: {
       console: true,
+    },
+    retention: {
+      workers: defaultRetentionPolicy(),
+      teams: defaultRetentionPolicy(),
     },
   };
 }
@@ -58,10 +63,14 @@ export function createJobRecord(input) {
     createdAt: input.createdAt,
     updatedAt: input.updatedAt ?? input.createdAt,
     startedAt: input.startedAt ?? null,
+    heartbeatAt: input.heartbeatAt ?? null,
     completedAt: input.completedAt ?? null,
     exitCode: input.exitCode ?? null,
+    costUsd: input.costUsd ?? null,
     errorMessage: input.errorMessage ?? null,
     scheduleId: input.scheduleId ?? null,
+    scheduledForAt: input.scheduledForAt ?? null,
+    runnerPid: input.runnerPid ?? null,
     retriedFromJobId: input.retriedFromJobId ?? null,
     attempt: input.attempt ?? 1,
     maxAttempts: input.maxAttempts ?? 1,
@@ -132,6 +141,7 @@ export function parseConfig(value) {
     budgets: {
       perRunUsd: readNullableNumber(input.budgets?.perRunUsd, defaults.budgets.perRunUsd, 'budgets.perRunUsd'),
       perDayUsd: readNullableNumber(input.budgets?.perDayUsd, defaults.budgets.perDayUsd, 'budgets.perDayUsd'),
+      perDayRuns: readNullableInteger(input.budgets?.perDayRuns, defaults.budgets.perDayRuns, 'budgets.perDayRuns', 0),
     },
     repos: {
       allowUnattended: readStringArray(input.repos?.allowUnattended, defaults.repos.allowUnattended, 'repos.allowUnattended'),
@@ -145,6 +155,10 @@ export function parseConfig(value) {
     },
     notifications: {
       console: readBoolean(input.notifications?.console, defaults.notifications.console, 'notifications.console'),
+    },
+    retention: {
+      workers: parseRetentionPolicy(input.retention?.workers, defaults.retention.workers, 'retention.workers'),
+      teams: parseRetentionPolicy(input.retention?.teams, defaults.retention.teams, 'retention.teams'),
     },
   };
 }
@@ -194,10 +208,14 @@ export function parseJobRecord(value) {
     createdAt: readIsoString(value.createdAt, 'job.createdAt'),
     updatedAt: readIsoString(value.updatedAt, 'job.updatedAt'),
     startedAt: readNullableIsoString(value.startedAt, null, 'job.startedAt'),
+    heartbeatAt: readNullableIsoString(value.heartbeatAt, null, 'job.heartbeatAt'),
     completedAt: readNullableIsoString(value.completedAt, null, 'job.completedAt'),
     exitCode: readNullableInteger(value.exitCode, null, 'job.exitCode', 0),
+    costUsd: readNullableNumber(value.costUsd, null, 'job.costUsd'),
     errorMessage: readNullableString(value.errorMessage, null, 'job.errorMessage'),
     scheduleId: readNullableString(value.scheduleId, null, 'job.scheduleId'),
+    scheduledForAt: readNullableIsoString(value.scheduledForAt, null, 'job.scheduledForAt'),
+    runnerPid: readNullableInteger(value.runnerPid, null, 'job.runnerPid', 0),
     retriedFromJobId: readNullableString(value.retriedFromJobId, null, 'job.retriedFromJobId'),
     attempt: readInteger(value.attempt, 1, 'job.attempt', 1),
     maxAttempts: readInteger(value.maxAttempts, 1, 'job.maxAttempts', 1),
@@ -320,4 +338,28 @@ function readNullableIsoString(value, fallback, fieldName) {
   }
 
   return readIsoString(value, fieldName);
+}
+
+function defaultRetentionPolicy() {
+  return {
+    autoPruneAfterDays: null,
+    compactArchives: true,
+    maxArchiveEntries: 10,
+    maxArchiveAgeDays: null,
+    maxArchiveBytes: null,
+    allowDeleteArchived: false,
+  };
+}
+
+function parseRetentionPolicy(value, defaults, fieldName) {
+  const input = isPlainObject(value) ? value : {};
+
+  return {
+    autoPruneAfterDays: readNullableInteger(input.autoPruneAfterDays, defaults.autoPruneAfterDays, `${fieldName}.autoPruneAfterDays`, 0),
+    compactArchives: readBoolean(input.compactArchives, defaults.compactArchives, `${fieldName}.compactArchives`),
+    maxArchiveEntries: readInteger(input.maxArchiveEntries, defaults.maxArchiveEntries, `${fieldName}.maxArchiveEntries`, 1),
+    maxArchiveAgeDays: readNullableInteger(input.maxArchiveAgeDays, defaults.maxArchiveAgeDays, `${fieldName}.maxArchiveAgeDays`, 0),
+    maxArchiveBytes: readNullableInteger(input.maxArchiveBytes, defaults.maxArchiveBytes, `${fieldName}.maxArchiveBytes`, 0),
+    allowDeleteArchived: readBoolean(input.allowDeleteArchived, defaults.allowDeleteArchived, `${fieldName}.allowDeleteArchived`),
+  };
 }
