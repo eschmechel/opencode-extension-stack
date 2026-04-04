@@ -505,6 +505,219 @@ test('readDaemonState reports stopped when no daemon state exists', async () => 
   assert.equal(state.state, 'stopped');
 });
 
+test('runnerOnce auto-schedules retry with exponential backoff when job fails under maxAttempts', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.retry.maxAttempts = 3;
+  config.retry.backoffType = 'exponential';
+  config.retry.baseDelaySeconds = 30;
+  config.retry.maxDelaySeconds = 3600;
+  await saveConfig(repoRoot, config);
+
+  await queueAdd('unreliable task', { cwd: repoRoot, now: '2026-04-03T12:00:00.000Z' });
+
+  const result = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:00.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed',
+    }),
+  });
+
+  const jobs = await jobsList({ cwd: repoRoot });
+  const original = jobs.find((j) => j.jobId === result.claimed.jobId);
+  const retried = jobs.find((j) => j.retriedFromJobId === original.jobId);
+
+  assert.equal(result.finalized.status, 'failed');
+  assert.equal(original.status, 'failed');
+  assert.notEqual(retried, undefined);
+  assert.equal(retried.status, 'queued');
+  assert.equal(retried.attempt, 2);
+  assert.equal(retried.maxAttempts, 3);
+  assert.notEqual(retried.retryAt, null);
+
+  const retryAtMs = new Date(retried.retryAt).getTime();
+  const finishMs = new Date('2026-04-03T12:05:00.000Z').getTime();
+  assert.ok(retryAtMs >= finishMs, 'retryAt should be after finish time');
+});
+
+test('runnerOnce does not auto-schedule retry when job reaches maxAttempts', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.retry.maxAttempts = 2;
+  config.retry.baseDelaySeconds = 1;
+  await saveConfig(repoRoot, config);
+
+  await queueAdd('always fails', { cwd: repoRoot, now: '2026-04-03T12:00:00.000Z' });
+
+  const first = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:00.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed',
+    }),
+  });
+
+  const jobsAfterFirst = await jobsList({ cwd: repoRoot });
+  const retriedJob = jobsAfterFirst.find((j) => j.retriedFromJobId === first.claimed.jobId);
+  assert.notEqual(retriedJob, undefined);
+  assert.equal(retriedJob.attempt, 2);
+
+  const second = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:02.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed again',
+    }),
+  });
+
+  const jobsAfterSecond = await jobsList({ cwd: repoRoot });
+  const retriedAfterSecond = jobsAfterSecond.find((j) => j.retriedFromJobId === retriedJob.jobId);
+  assert.equal(retriedAfterSecond, undefined);
+});
+
+test('runnerOnce respects retryAt and skips jobs not yet ready', async () => {
+  const repoRoot = await createTempRepo();
+  const jobsState = await loadJobsState(repoRoot);
+  const config = await loadConfig(repoRoot);
+  config.retry.maxAttempts = 3;
+  await saveConfig(repoRoot, config);
+
+  jobsState.jobs.push(createJobRecord({
+    jobId: 'job_delayed',
+    runId: 'run_delayed',
+    source: 'queue',
+    status: 'queued',
+    prompt: 'retry task',
+    createdAt: '2026-04-03T12:00:00.000Z',
+    updatedAt: '2026-04-03T12:00:00.000Z',
+    startedAt: null,
+    heartbeatAt: null,
+    completedAt: null,
+    exitCode: null,
+    costUsd: null,
+    errorMessage: null,
+    scheduleId: null,
+    scheduledForAt: null,
+    retriedFromJobId: 'job_original',
+    attempt: 2,
+    maxAttempts: 3,
+    retryAt: '2026-04-03T12:30:00.000Z',
+    repoRoot,
+  }));
+  await saveJobsState(repoRoot, jobsState);
+
+  await queueAdd('new task', { cwd: repoRoot, now: '2026-04-03T12:00:00.000Z' });
+
+  const result = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:00.000Z',
+    executeJob: async ({ prompt }) => ({
+      command: 'opencode',
+      args: ['run', prompt],
+      exitCode: 0,
+      stdout: 'done',
+      stderr: '',
+    }),
+  });
+
+  const jobs = await jobsList({ cwd: repoRoot });
+  const delayedJob = jobs.find((j) => j.jobId === 'job_delayed');
+  const newJob = jobs.find((j) => j.jobId !== 'job_delayed');
+
+  assert.equal(delayedJob.status, 'queued');
+  assert.equal(delayedJob.attempt, 2);
+  assert.equal(newJob.status, 'completed');
+});
+
+test('jobsRetry rejects when maxAttempts is reached', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.retry.maxAttempts = 2;
+  config.retry.baseDelaySeconds = 1;
+  await saveConfig(repoRoot, config);
+
+  await queueAdd('always fails', { cwd: repoRoot, now: '2026-04-03T12:00:00.000Z' });
+
+  const first = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:00.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed',
+    }),
+  });
+
+  const jobsAfterFirst = await jobsList({ cwd: repoRoot });
+  const retryJob = jobsAfterFirst.find((j) => j.retriedFromJobId === first.claimed.jobId);
+
+  const second = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:30.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed again',
+    }),
+  });
+
+  await assert.rejects(
+    () => jobsRetry(retryJob.jobId, { cwd: repoRoot, now: '2026-04-03T12:06:00.000Z' }),
+    /has reached max attempts/,
+  );
+});
+
+test('jobsRetry applies linear backoff and sets retryAt', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.retry.backoffType = 'linear';
+  config.retry.baseDelaySeconds = 60;
+  config.retry.maxDelaySeconds = 300;
+  config.retry.maxAttempts = 3;
+  await saveConfig(repoRoot, config);
+
+  await queueAdd('inspect planning docs', { cwd: repoRoot, now: '2026-04-03T12:00:00.000Z' });
+
+  const first = await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-03T12:05:00.000Z',
+    executeJob: async () => ({
+      command: 'fail',
+      args: ['test'],
+      exitCode: 1,
+      stdout: '',
+      stderr: 'job failed',
+    }),
+  });
+
+  const retried = await jobsRetry(first.claimed.jobId, {
+    cwd: repoRoot,
+    now: '2026-04-03T12:06:00.000Z',
+  });
+
+  assert.equal(retried.attempt, 2);
+  assert.notEqual(retried.retryAt, null);
+  const retryAtMs = new Date(retried.retryAt).getTime();
+  assert.ok(retryAtMs >= new Date('2026-04-03T12:07:00.000Z').getTime());
+});
+
 async function waitFor(check) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (await check()) {

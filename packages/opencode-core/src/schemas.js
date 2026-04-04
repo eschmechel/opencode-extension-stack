@@ -26,6 +26,12 @@ export function defaultConfig() {
       dispatchWhenIdle: true,
       minIdleSeconds: 300,
     },
+    retry: {
+      backoffType: 'exponential',
+      baseDelaySeconds: 30,
+      maxDelaySeconds: 3600,
+      maxAttempts: 3,
+    },
     models: {
       default: null,
     },
@@ -74,6 +80,7 @@ export function createJobRecord(input) {
     retriedFromJobId: input.retriedFromJobId ?? null,
     attempt: input.attempt ?? 1,
     maxAttempts: input.maxAttempts ?? 1,
+    retryAt: input.retryAt ?? null,
     repoRoot: input.repoRoot,
   });
 }
@@ -150,6 +157,12 @@ export function parseConfig(value) {
       dispatchWhenIdle: readBoolean(input.idle?.dispatchWhenIdle, defaults.idle.dispatchWhenIdle, 'idle.dispatchWhenIdle'),
       minIdleSeconds: readInteger(input.idle?.minIdleSeconds, defaults.idle.minIdleSeconds, 'idle.minIdleSeconds', 0),
     },
+    retry: {
+      backoffType: readRetryBackoffType(input.retry?.backoffType, defaults.retry.backoffType, 'retry.backoffType'),
+      baseDelaySeconds: readInteger(input.retry?.baseDelaySeconds, defaults.retry.baseDelaySeconds, 'retry.baseDelaySeconds', 1),
+      maxDelaySeconds: readInteger(input.retry?.maxDelaySeconds, defaults.retry.maxDelaySeconds, 'retry.maxDelaySeconds', 1),
+      maxAttempts: readInteger(input.retry?.maxAttempts, defaults.retry.maxAttempts, 'retry.maxAttempts', 1),
+    },
     models: {
       default: readNullableString(input.models?.default, defaults.models.default, 'models.default'),
     },
@@ -219,6 +232,7 @@ export function parseJobRecord(value) {
     retriedFromJobId: readNullableString(value.retriedFromJobId, null, 'job.retriedFromJobId'),
     attempt: readInteger(value.attempt, 1, 'job.attempt', 1),
     maxAttempts: readInteger(value.maxAttempts, 1, 'job.maxAttempts', 1),
+    retryAt: readNullableIsoString(value.retryAt, null, 'job.retryAt'),
     repoRoot: readString(value.repoRoot, undefined, 'job.repoRoot'),
   };
 }
@@ -320,6 +334,20 @@ function readStringArray(value, fallback, fieldName) {
   }
 
   return value;
+}
+
+const RETRY_BACKOFF_TYPES = new Set(['exponential', 'linear', 'fixed']);
+
+function readRetryBackoffType(value, fallback, fieldName) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  if (typeof value === 'string' && RETRY_BACKOFF_TYPES.has(value)) {
+    return value;
+  }
+
+  throw new Error(`Invalid ${fieldName}: expected one of: ${[...RETRY_BACKOFF_TYPES].join(', ')}.`);
 }
 
 function readIsoString(value, fieldName) {

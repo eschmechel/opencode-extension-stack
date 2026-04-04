@@ -142,6 +142,14 @@ export async function jobsRetry(jobId, options = {}) {
       throw new Error(`Only terminal jobs can be retried. Current status: ${original.status}`);
     }
 
+    const effectiveMaxAttempts = Math.max(original.maxAttempts, config.retry.maxAttempts);
+    if (original.attempt >= effectiveMaxAttempts) {
+      throw new Error(`Job has reached max attempts (${effectiveMaxAttempts}). Cannot retry.`);
+    }
+
+    const retryDelayMs = calculateBackoffDelay(original.attempt, config.retry);
+    const retryAt = new Date(new Date(nowIso).getTime() + retryDelayMs).toISOString();
+
     const retriedJob = createJobRecord({
       jobId: createStableId('job'),
       runId: createStableId('run'),
@@ -155,7 +163,8 @@ export async function jobsRetry(jobId, options = {}) {
       heartbeatAt: null,
       retriedFromJobId: original.jobId,
       attempt: original.attempt + 1,
-      maxAttempts: Math.max(original.maxAttempts, original.attempt + 1),
+      maxAttempts: effectiveMaxAttempts,
+      retryAt,
       repoRoot,
     });
 
@@ -165,6 +174,7 @@ export async function jobsRetry(jobId, options = {}) {
     const runLogPath = await appendRunEvent(repoRoot, retriedJob.runId, 'job.retried', {
       jobId: retriedJob.jobId,
       retriedFromJobId: original.jobId,
+      retryAt,
       source: retriedJob.source,
       prompt: retriedJob.prompt,
     });
@@ -693,9 +703,19 @@ async function claimNextQueuedJob(repoRoot, config, now) {
       };
     }
 
-    const job = jobsState.jobs
+    const nowMs = new Date(claimTime).getTime();
+
+    const eligibleJobs = jobsState.jobs
       .filter((entry) => entry.status === 'queued')
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+      .filter((entry) => {
+        if (!entry.retryAt) {
+          return true;
+        }
+        return new Date(entry.retryAt).getTime() <= nowMs;
+      })
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+    const job = eligibleJobs[0] ?? null;
 
     if (!job) {
       return { job: null, skipped: null };
@@ -838,6 +858,37 @@ async function finalizeJobRun(repoRoot, jobId, runId, execution, now, config, ru
       jobId: job.jobId,
       runId,
     });
+
+    if (job.status === 'failed' && job.attempt < config.retry.maxAttempts && config.retry.maxAttempts > 1) {
+      const retryDelayMs = calculateBackoffDelay(job.attempt, config.retry);
+      const retryAt = new Date(new Date(finishTime).getTime() + retryDelayMs).toISOString();
+      const retriedJob = createJobRecord({
+        jobId: createStableId('job'),
+        runId: createStableId('run'),
+        source: job.source,
+        prompt: job.prompt,
+        createdAt: finishTime,
+        updatedAt: finishTime,
+        scheduleId: job.scheduleId,
+        scheduledForAt: job.scheduledForAt,
+        runnerPid: null,
+        heartbeatAt: null,
+        retriedFromJobId: job.jobId,
+        attempt: job.attempt + 1,
+        maxAttempts: config.retry.maxAttempts,
+        retryAt,
+        repoRoot,
+      });
+      jobsState.jobs.push(retriedJob);
+      await saveJobsState(repoRoot, jobsState);
+      await appendRunEvent(repoRoot, retriedJob.runId, 'job.scheduled_retry', {
+        jobId: retriedJob.jobId,
+        retriedFromJobId: job.jobId,
+        retryAt,
+        attempt: retriedJob.attempt,
+        maxAttempts: retriedJob.maxAttempts,
+      });
+    }
 
     return {
       ...job,
@@ -1256,6 +1307,19 @@ function isProcessRunning(pid) {
   } catch {
     return false;
   }
+}
+
+function calculateBackoffDelay(attempt, retryConfig) {
+  const { backoffType, baseDelaySeconds, maxDelaySeconds } = retryConfig;
+  const delaySeconds = Math.min(
+    backoffType === 'exponential'
+      ? baseDelaySeconds * Math.pow(2, attempt - 1)
+      : backoffType === 'linear'
+        ? baseDelaySeconds * attempt
+        : baseDelaySeconds,
+    maxDelaySeconds
+  );
+  return Math.max(delaySeconds * 1000, 0);
 }
 
 function sleep(ms) {
