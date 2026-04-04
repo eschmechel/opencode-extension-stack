@@ -312,6 +312,126 @@ export async function memoryRepair(memoryId, options = {}) {
   });
 }
 
+export async function memoryMergeApply(topicA, topicB, options = {}) {
+  const trimmedA = topicA.trim();
+  const trimmedB = topicB.trim();
+  if (!trimmedA || !trimmedB) {
+    throw new Error('Two topic names are required for /memory merge.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  const policy = await loadMemoryPolicy(repoRoot);
+  const leftTopic = slugifyTopic(trimmedA);
+  const rightTopic = slugifyTopic(trimmedB);
+  if (leftTopic === rightTopic) {
+    throw new Error('memory merge requires two different topics.');
+  }
+  const targetTopic = slugifyTopic(options.targetTopic ?? leftTopic);
+
+  return withRepoLock(repoRoot, async () => {
+    const topicFiles = await loadAllTopicFiles(namespacePaths);
+    const mergeCandidates = buildCrossTopicMergeCandidates(topicFiles, policy.compact);
+    if (!options.force && !hasMergeCandidate(mergeCandidates, leftTopic, rightTopic)) {
+      throw new Error(`No advisory merge candidate exists for ${leftTopic} and ${rightTopic}. Use --force to merge anyway.`);
+    }
+
+    const leftFile = await loadTopicFile(namespacePaths, leftTopic);
+    const rightFile = await loadTopicFile(namespacePaths, rightTopic);
+    const targetFile = targetTopic === leftTopic
+      ? leftFile
+      : targetTopic === rightTopic
+        ? rightFile
+        : await loadTopicFile(namespacePaths, targetTopic);
+
+    const existingMergedByTopics = targetFile.entries.find((entry) => (
+      !entry.stale &&
+      entry.entryType === 'merged' &&
+      sameStringArray(entry.sourceTopics, [leftTopic, rightTopic].sort())
+    )) ?? null;
+
+    const sourceEntries = collectMergeSourceEntries([leftFile, rightFile]);
+    if (sourceEntries.length < 2) {
+      if (existingMergedByTopics) {
+        const rebuiltExisting = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
+        return {
+          repoRoot,
+          namespace: namespacePaths.namespace,
+          teamId: namespacePaths.teamId,
+          merged: existingMergedByTopics,
+          sourceTopics: [leftTopic, rightTopic],
+          targetTopic,
+          targetPath: getTopicPath(namespacePaths, targetTopic),
+          indexPath: rebuiltExisting.indexPath,
+          reusedExisting: true,
+        };
+      }
+      throw new Error(`Not enough active entries remain in ${leftTopic} and ${rightTopic} to merge.`);
+    }
+
+    const sourceMemoryIds = sourceEntries.map((entry) => entry.memoryId).sort();
+    const existingMerged = targetFile.entries.find((entry) => (
+      !entry.stale &&
+      entry.entryType === 'merged' &&
+      sameStringArray(entry.sourceMemoryIds, sourceMemoryIds)
+    )) ?? null;
+
+    if (existingMerged) {
+      const rebuiltExisting = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
+      return {
+        repoRoot,
+        namespace: namespacePaths.namespace,
+        teamId: namespacePaths.teamId,
+        merged: existingMerged,
+        sourceTopics: [leftTopic, rightTopic],
+        targetTopic,
+        targetPath: getTopicPath(namespacePaths, targetTopic),
+        indexPath: rebuiltExisting.indexPath,
+        reusedExisting: true,
+      };
+    }
+
+    const mergedEntry = createMergedEntry(targetTopic, [leftTopic, rightTopic], sourceEntries, nowIso);
+
+    for (const sourceEntry of sourceEntries) {
+      sourceEntry.stale = true;
+      sourceEntry.staleReason = 'merged_into_topic';
+      sourceEntry.replacedByMemoryId = mergedEntry.memoryId;
+      sourceEntry.lastValidatedAt = nowIso;
+      sourceEntry.updatedAt = nowIso;
+    }
+
+    targetFile.entries.push(mergedEntry);
+    leftFile.updatedAt = nowIso;
+    rightFile.updatedAt = nowIso;
+    targetFile.updatedAt = nowIso;
+
+    const filesToSave = new Map([
+      [leftFile.topic, leftFile],
+      [rightFile.topic, rightFile],
+      [targetFile.topic, targetFile],
+    ]);
+    for (const [topic, topicFile] of filesToSave) {
+      await saveTopicFile(getTopicPath(namespacePaths, topic), topicFile);
+    }
+
+    const rebuilt = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
+    return {
+      repoRoot,
+      namespace: namespacePaths.namespace,
+      teamId: namespacePaths.teamId,
+      merged: mergedEntry,
+      sourceTopics: [leftTopic, rightTopic],
+      targetTopic,
+      targetPath: getTopicPath(namespacePaths, targetTopic),
+      indexPath: rebuilt.indexPath,
+      reusedExisting: false,
+    };
+  });
+}
+
 export async function memoryRebuild(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const nowIso = toIso(options.now);
@@ -539,9 +659,12 @@ function parseTopicEntry(value, topic) {
     stale: Boolean(value.stale),
     staleReason: typeof value.staleReason === 'string' ? value.staleReason : null,
     lastValidatedAt: normalizeNullableIso(value.lastValidatedAt),
-    entryType: value.entryType === 'consolidated' ? 'consolidated' : 'note',
+    entryType: ['consolidated', 'merged'].includes(value.entryType) ? value.entryType : 'note',
     sourceMemoryIds: Array.isArray(value.sourceMemoryIds)
       ? value.sourceMemoryIds.filter((entry) => typeof entry === 'string' && entry.trim())
+      : [],
+    sourceTopics: Array.isArray(value.sourceTopics)
+      ? value.sourceTopics.filter((entry) => typeof entry === 'string' && entry.trim())
       : [],
     replacedByMemoryId: typeof value.replacedByMemoryId === 'string' ? value.replacedByMemoryId : null,
     repairedFromMemoryId: typeof value.repairedFromMemoryId === 'string' ? value.repairedFromMemoryId : null,
@@ -624,7 +747,7 @@ function buildTopicSummary(namespacePaths, topicFile) {
 }
 
 async function evaluateEntryStaleState(repoRoot, entry, nowIso) {
-  if (entry.stale && ['compacted_duplicate', 'compacted_consolidated', 'repaired'].includes(entry.staleReason)) {
+  if (entry.stale && ['compacted_duplicate', 'compacted_consolidated', 'repaired', 'merged_into_topic'].includes(entry.staleReason)) {
     return {
       stale: true,
       staleReason: entry.staleReason,
@@ -945,7 +1068,7 @@ function buildCrossTopicMergeCandidates(topicFiles, compactPolicy) {
       }
 
       candidates.push({
-        topics: [left.topic, right.topic],
+        topics: [left.topic, right.topic].sort(),
         sharedTerms,
         similarity,
         activeCounts: [left.activeEntries.length, right.activeEntries.length],
@@ -992,7 +1115,7 @@ function buildTopicDriftAlerts(topicFiles, compactPolicy) {
 }
 
 function buildTopicSignal(topicFile) {
-  const activeEntries = topicFile.entries.filter((entry) => !entry.stale);
+  const activeEntries = topicFile.entries.filter((entry) => !entry.stale && entry.entryType !== 'merged');
   const terms = new Set(tokenizeSignalText(topicFile.topic));
   for (const entry of activeEntries) {
     for (const term of tokenizeSignalText(entry.summary)) {
@@ -1005,6 +1128,14 @@ function buildTopicSignal(topicFile) {
     activeEntries,
     terms: [...terms].sort(),
   };
+}
+
+function collectMergeSourceEntries(topicFiles) {
+  return topicFiles.flatMap((topicFile) => topicFile.entries.filter((entry) => !entry.stale && entry.entryType !== 'merged'));
+}
+
+function hasMergeCandidate(candidates, leftTopic, rightTopic) {
+  return candidates.some((candidate) => sameStringArray(candidate.topics, [leftTopic, rightTopic].sort()));
 }
 
 function tokenizeSignalText(value) {
@@ -1183,7 +1314,7 @@ function isSuccessfulWorkerState(worker) {
 }
 
 function isRepairableStaleEntry(entry) {
-  return Boolean(entry?.stale) && !['compacted_duplicate', 'compacted_consolidated', 'repaired'].includes(entry.staleReason);
+  return Boolean(entry?.stale) && !['compacted_duplicate', 'compacted_consolidated', 'repaired', 'merged_into_topic'].includes(entry.staleReason);
 }
 
 function buildCompactKey(entry) {
@@ -1268,7 +1399,35 @@ function createConsolidatedEntry(topic, sourceEntries, nowIso, compactPolicy) {
     lastValidatedAt: nowIso,
     entryType: 'consolidated',
     sourceMemoryIds: sortedEntries.map((entry) => entry.memoryId).sort(),
+    sourceTopics: [topic],
     replacedByMemoryId: null,
+  };
+}
+
+function createMergedEntry(targetTopic, sourceTopics, sourceEntries, nowIso) {
+  const sortedEntries = sortEntriesNewestFirst(sourceEntries);
+  const summary = [
+    `Merged memory for topics ${sourceTopics.join(' + ')} from ${sortedEntries.length} entries:`,
+    ...sortedEntries.slice(0, 8).map((entry) => `- [${entry.topic}] ${entry.summary}`),
+    ...(sortedEntries.length > 8 ? [`- ...and ${sortedEntries.length - 8} more entries`] : []),
+  ].join('\n');
+
+  return {
+    ...createMemoryEntry({
+      topic: targetTopic,
+      createdAt: nowIso,
+      evidence: dedupeEvidence(sortedEntries.flatMap((entry) => entry.evidence)),
+      summary,
+    }),
+    updatedAt: nowIso,
+    stale: false,
+    staleReason: null,
+    lastValidatedAt: nowIso,
+    entryType: 'merged',
+    sourceMemoryIds: sortedEntries.map((entry) => entry.memoryId).sort(),
+    sourceTopics: [...new Set(sourceTopics.map(slugifyTopic))].sort(),
+    replacedByMemoryId: null,
+    repairedFromMemoryId: null,
   };
 }
 

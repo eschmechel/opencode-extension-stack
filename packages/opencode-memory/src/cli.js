@@ -4,6 +4,7 @@ import {
   getMemoryPaths,
   memoryAdd,
   memoryCompact,
+  memoryMergeApply,
   memoryRepair,
   memoryRebuild,
   memorySearch,
@@ -77,6 +78,9 @@ async function runMemory(subcommand, args) {
         if (entry.entryType === 'consolidated') {
           flags.push('consolidated');
         }
+        if (entry.entryType === 'merged') {
+          flags.push('merged');
+        }
         if (entry.stale) {
           flags.push(`stale:${entry.staleReason}`);
         }
@@ -87,6 +91,9 @@ async function runMemory(subcommand, args) {
         }
         if (entry.repairedFromMemoryId) {
           console.log(`  repaired from: ${entry.repairedFromMemoryId}`);
+        }
+        if (Array.isArray(entry.sourceTopics) && entry.sourceTopics.length > 0) {
+          console.log(`  source topics: ${entry.sourceTopics.join(', ')}`);
         }
         for (const evidence of entry.evidence) {
           if (evidence.kind === 'run' && evidence.runId) {
@@ -203,6 +210,23 @@ async function runMemory(subcommand, args) {
       printKeyValue('summary', result.repaired.summary);
       return;
     }
+    case 'merge': {
+      const parsed = parseMergeArgs(parsedCommon.args);
+      const result = await memoryMergeApply(parsed.topicA, parsed.topicB, {
+        targetTopic: parsed.targetTopic,
+        force: parsed.force,
+        teamId: parsed.teamId ?? parsedCommon.teamId,
+      });
+      printHeader(result.reusedExisting ? `Reused merge ${result.merged.memoryId}` : `Merged ${result.merged.memoryId}`);
+      if (result.teamId) {
+        printKeyValue('team', result.teamId);
+      }
+      printKeyValue('source topics', result.sourceTopics.join(', '));
+      printKeyValue('target topic', result.targetTopic);
+      printKeyValue('target file', result.targetPath);
+      printKeyValue('index', result.indexPath);
+      return;
+    }
     case 'rebuild': {
       const result = await memoryRebuild(teamOptions);
       printHeader(result.namespace === 'team' ? `Memory index rebuilt team/${result.teamId}` : 'Memory index rebuilt');
@@ -227,7 +251,7 @@ async function runMemory(subcommand, args) {
       return;
     }
     default:
-      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--stale] [--repairable] [--team <teamId>] | /memory stale [--repairable] [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
+      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--stale] [--repairable] [--team <teamId>] | /memory stale [--repairable] [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>] | /memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
   }
 }
 
@@ -377,6 +401,39 @@ function parseStaleArgs(args) {
   };
 }
 
+function parseMergeArgs(args) {
+  const topicA = args[0] ?? '';
+  const topicB = args[1] ?? '';
+  let targetTopic = '';
+  let teamId = null;
+  let force = false;
+
+  for (let index = 2; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--target') {
+      targetTopic = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--team') {
+      teamId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--force') {
+      force = true;
+    }
+  }
+
+  return {
+    topicA,
+    topicB,
+    targetTopic,
+    teamId,
+    force,
+  };
+}
+
 function extractTeamFlag(args) {
   const filtered = [];
   let teamId = null;
@@ -416,6 +473,7 @@ function printHelp() {
   console.log('  pnpm run memory -- /memory stale [--repairable] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory rebuild [--team <teamId>]');
   console.log('  pnpm run memory -- /memory compact [--team <teamId>]');
   console.log('  pnpm run memory -- paths [--team <teamId>]');

@@ -9,6 +9,7 @@ import { ensureStateLayout, getOpencodePaths, loadConfig, saveConfig } from '../
 import {
   memoryAdd,
   memoryCompact,
+  memoryMergeApply,
   memoryRepair,
   memoryRebuild,
   memorySearch,
@@ -287,6 +288,47 @@ test('memoryRebuild reports cross-topic merge candidates and drift alerts', asyn
   assert.equal(rebuilt.driftAlerts.some((alert) => alert.topic === 'execution'), true);
   assert.match(rebuilt.markdown, /## Merge Candidates/);
   assert.match(rebuilt.markdown, /## Drift Alerts/);
+});
+
+test('memoryMergeApply creates one merged entry and marks source notes stale', async () => {
+  const repoRoot = await createTempRepo();
+  await writeRunArtifact(repoRoot, 'run_merge_apply_one');
+  await writeRunArtifact(repoRoot, 'run_merge_apply_two');
+
+  await memoryAdd('Queue retry policy uses exponential backoff.', {
+    cwd: repoRoot,
+    topic: 'Queue Retry Policy',
+    runId: 'run_merge_apply_one',
+  });
+  await memoryAdd('Retry queue policy uses exponential backoff.', {
+    cwd: repoRoot,
+    topic: 'Retry Queue Policy',
+    runId: 'run_merge_apply_two',
+  });
+
+  const merged = await memoryMergeApply('Queue Retry Policy', 'Retry Queue Policy', {
+    cwd: repoRoot,
+    targetTopic: 'Queue Retry Policy',
+    now: '2026-04-04T14:05:00.000Z',
+  });
+
+  assert.equal(merged.reusedExisting, false);
+  assert.equal(merged.merged.entryType, 'merged');
+  assert.deepEqual(merged.merged.sourceTopics, ['queue-retry-policy', 'retry-queue-policy']);
+
+  const targetView = await memoryShow('Queue Retry Policy', { cwd: repoRoot });
+  const rightView = await memoryShow('Retry Queue Policy', { cwd: repoRoot });
+  assert.equal(targetView.entries.some((entry) => entry.entryType === 'merged'), true);
+  assert.equal(targetView.entries.some((entry) => entry.staleReason === 'merged_into_topic'), true);
+  assert.equal(rightView.entries[0].staleReason, 'merged_into_topic');
+
+  const second = await memoryMergeApply('Queue Retry Policy', 'Retry Queue Policy', {
+    cwd: repoRoot,
+    targetTopic: 'Queue Retry Policy',
+    now: '2026-04-04T14:06:00.000Z',
+    force: true,
+  });
+  assert.equal(second.reusedExisting, true);
 });
 
 test('memoryCompact marks entries stale when run evidence disappears', async () => {
