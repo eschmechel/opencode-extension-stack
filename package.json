@@ -19,6 +19,7 @@
     "smoke:memory": "node packages/opencode-memory/src/cli.js help",
     "smoke:orchestrator": "node packages/opencode-orchestrator/src/cli.js help",
     "smoke:packs": "node packages/opencode-packs/src/cli.js help",
+    "release:check": "pnpm test && pnpm run smoke",
     "test": "node --test"
   }
 }
