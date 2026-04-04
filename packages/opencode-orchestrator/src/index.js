@@ -12,7 +12,7 @@ import {
   getOpencodePaths,
   loadConfig,
   withRepoLock,
-} from '../../opencode-core/src/index.js';
+} from '@opencode-extension-stack/opencode-core';
 
 const WORKER_LOOP_INTERVAL_MS = 1000;
 const WORKER_HEARTBEAT_INTERVAL_MS = 5000;
@@ -1165,7 +1165,7 @@ async function assertTeamMemoryNamespaceAvailable(repoRoot, teamId) {
 let memoryModulePromise;
 
 async function loadMemoryModule() {
-  memoryModulePromise ??= import('../../opencode-memory/src/index.js');
+  memoryModulePromise ??= import('@opencode-extension-stack/opencode-memory');
   return memoryModulePromise;
 }
 

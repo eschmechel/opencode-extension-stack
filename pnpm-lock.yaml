@@ -8,7 +8,14 @@ importers:
 
   .: {}
 
-  packages/opencode-bridge: {}
+  packages/opencode-bridge:
+    dependencies:
+      '@opencode-extension-stack/opencode-core':
+        specifier: workspace:*
+        version: link:../opencode-core
+      '@opencode-extension-stack/opencode-packs':
+        specifier: workspace:*
+        version: link:../opencode-packs
 
   packages/opencode-core: {}
 
@@ -18,8 +25,23 @@ importers:
         specifier: workspace:*
         version: link:../opencode-core
 
-  packages/opencode-memory: {}
+  packages/opencode-memory:
+    dependencies:
+      '@opencode-extension-stack/opencode-core':
+        specifier: workspace:*
+        version: link:../opencode-core
 
-  packages/opencode-orchestrator: {}
+  packages/opencode-orchestrator:
+    dependencies:
+      '@opencode-extension-stack/opencode-core':
+        specifier: workspace:*
+        version: link:../opencode-core
+      '@opencode-extension-stack/opencode-memory':
+        specifier: workspace:*
+        version: link:../opencode-memory
 
-  packages/opencode-packs: {}
+  packages/opencode-packs:
+    dependencies:
+      '@opencode-extension-stack/opencode-core':
+        specifier: workspace:*
+        version: link:../opencode-core

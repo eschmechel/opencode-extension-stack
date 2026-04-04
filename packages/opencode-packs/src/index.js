@@ -6,7 +6,7 @@ import {
   ensureStateLayout,
   findRepoRoot,
   getOpencodePaths,
-} from '../../opencode-core/src/index.js';
+} from '@opencode-extension-stack/opencode-core';
 
 const PACK_CHANNELS = new Set(['local', 'remote']);
 

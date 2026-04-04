@@ -8,8 +8,7 @@ import {
   getOpencodePaths,
   loadConfig,
   withRepoLock,
-} from '../../opencode-core/src/index.js';
-import { teamShow } from '../../opencode-orchestrator/src/index.js';
+} from '@opencode-extension-stack/opencode-core';
 
 const MEMORY_TOPIC_VERSION = 1;
 const TEXT_STOPWORDS = new Set([
@@ -981,25 +980,75 @@ async function resolveWorkerEvidence(repoRoot, workerId, capturedAt) {
 }
 
 async function resolveTeamEvidence(repoRoot, teamId, capturedAt) {
-  let team;
-  try {
-    team = await teamShow(teamId, { cwd: repoRoot });
-  } catch (error) {
-    throw new Error(`Team evidence not found: ${teamId}${error instanceof Error && error.message ? ` (${error.message})` : ''}`);
+  const team = await readTeamSynthesisState(repoRoot, teamId);
+  if (!team.exists) {
+    throw new Error(`Team evidence not found: ${teamId}`);
   }
 
-  if (!team?.synthesis?.summaryText || !Array.isArray(team.synthesis.completed) || team.synthesis.completed.length < 1) {
+  const summary = synthesizeTeamEvidence(team.workers);
+  if (!summary.summaryText || summary.completedCount < 1) {
     throw new Error(`Team ${teamId} is not in a successful synthesized state and cannot back a memory entry.`);
   }
 
   return {
     kind: 'team',
     teamId,
-    teamPath: toRepoRelative(repoRoot, getTeamEvidencePath(repoRoot, teamId)),
-    summaryText: team.synthesis.summaryText,
-    previewCount: Array.isArray(team.synthesis.previews) ? team.synthesis.previews.length : 0,
-    completedCount: Array.isArray(team.synthesis.completed) ? team.synthesis.completed.length : 0,
+    teamPath: toRepoRelative(repoRoot, team.teamPath),
+    summaryText: summary.summaryText,
+    previewCount: summary.previewCount,
+    completedCount: summary.completedCount,
     capturedAt,
+  };
+}
+
+async function readTeamSynthesisState(repoRoot, teamId) {
+  const teamPath = path.join(getOpencodePaths(repoRoot).teamsDir, `${teamId}.json`);
+  try {
+    const team = JSON.parse(await fs.readFile(teamPath, 'utf8'));
+    const workerIds = Array.isArray(team.workerIds) ? team.workerIds.filter((entry) => typeof entry === 'string' && entry.trim()) : [];
+    const workers = [];
+
+    for (const workerId of workerIds) {
+      const workerPath = path.join(getOpencodePaths(repoRoot).workersDir, workerId, 'worker.json');
+      try {
+        const worker = JSON.parse(await fs.readFile(workerPath, 'utf8'));
+        const stdoutPath = path.join(getOpencodePaths(repoRoot).workersDir, workerId, 'current.stdout.txt');
+        const preview = await readPreview(stdoutPath);
+        workers.push({ ...worker, preview });
+      } catch {
+        // Ignore unreadable worker state during team evidence synthesis.
+      }
+    }
+
+    return {
+      exists: true,
+      teamPath,
+      workers,
+    };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return {
+        exists: false,
+        teamPath,
+        workers: [],
+      };
+    }
+
+    throw new Error(`Failed to read team evidence for ${teamId}: ${error.message}`);
+  }
+}
+
+function synthesizeTeamEvidence(workers) {
+  const completed = workers.filter((worker) => worker.status === 'idle' && worker.runCount > 0);
+  const failed = workers.filter((worker) => worker.status === 'failed');
+  const blocked = workers.filter((worker) => worker.status === 'blocked');
+  const running = workers.filter((worker) => worker.status === 'running');
+  const previews = workers.filter((worker) => worker.preview).slice(0, 5);
+
+  return {
+    summaryText: `completed=${completed.length} failed=${failed.length} blocked=${blocked.length} running=${running.length}`,
+    previewCount: previews.length,
+    completedCount: completed.length,
   };
 }
 
@@ -1365,6 +1414,16 @@ function getWorkerEvidencePaths(repoRoot, workerId) {
 
 function getTeamEvidencePath(repoRoot, teamId) {
   return path.join(getOpencodePaths(repoRoot).teamsDir, `${teamId}.json`);
+}
+
+async function readPreview(filePath) {
+  try {
+    const content = await fs.readFile(filePath, 'utf8');
+    const trimmed = content.trim();
+    return trimmed ? trimmed.slice(-500) : null;
+  } catch {
+    return null;
+  }
 }
 
 function toRepoRelative(repoRoot, filePath) {

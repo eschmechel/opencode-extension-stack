@@ -17,8 +17,8 @@ import {
   loadJobsState,
   withRepoLock,
   saveJobsState,
-} from '../../opencode-core/src/index.js';
-import { executePack } from '../../opencode-packs/src/index.js';
+} from '@opencode-extension-stack/opencode-core';
+import { executePack } from '@opencode-extension-stack/opencode-packs';
 
 const REMOTE_STATE_VERSION = 1;
 const REMOTE_AUTH_VERSION = 1;
