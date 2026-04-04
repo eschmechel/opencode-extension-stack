@@ -29,7 +29,7 @@ async function main() {
       await runMemory(subcommand, args.slice(2));
       return;
     case 'paths':
-      await runPaths();
+      await runPaths(args.slice(1));
       return;
     case 'help':
       printHelp();
@@ -40,12 +40,15 @@ async function main() {
 }
 
 async function runMemory(subcommand, args) {
+  const parsedCommon = extractTeamFlag(args);
+  const teamOptions = { teamId: parsedCommon.teamId };
+
   switch (subcommand) {
     case 'show': {
-      const topic = args[0] ?? '';
-      const result = await memoryShow(topic);
+      const topic = parsedCommon.args[0] ?? '';
+      const result = await memoryShow(topic, teamOptions);
       if (result.scope === 'index') {
-        printHeader('Memory index');
+        printHeader(result.namespace === 'team' ? `Memory index team/${result.teamId}` : 'Memory index');
         printKeyValue('index', result.indexPath);
         printKeyValue('topics', result.topics.length);
         for (const topicSummary of result.topics) {
@@ -54,7 +57,7 @@ async function runMemory(subcommand, args) {
         return;
       }
 
-      printHeader(`Memory topic ${result.topic}`);
+      printHeader(result.namespace === 'team' ? `Memory topic ${result.topic} team/${result.teamId}` : `Memory topic ${result.topic}`);
       printKeyValue('file', result.topicPath);
       printKeyValue('entries', result.summary.entryCount);
       printKeyValue('active', result.summary.activeCount);
@@ -71,9 +74,9 @@ async function runMemory(subcommand, args) {
       return;
     }
     case 'search': {
-      const query = args.join(' ').trim();
-      const result = await memorySearch(query);
-      printHeader(`Memory search: ${result.query}`);
+      const query = parsedCommon.args.join(' ').trim();
+      const result = await memorySearch(query, teamOptions);
+      printHeader(result.namespace === 'team' ? `Memory search team/${result.teamId}: ${result.query}` : `Memory search: ${result.query}`);
       printKeyValue('matches', result.count);
       for (const match of result.matches) {
         console.log(`- ${match.topic} ${match.memoryId}${match.stale ? ` [stale:${match.staleReason}]` : ''}`);
@@ -82,12 +85,16 @@ async function runMemory(subcommand, args) {
       return;
     }
     case 'add': {
-      const parsed = parseAddArgs(args);
+      const parsed = parseAddArgs(parsedCommon.args);
       const result = await memoryAdd(parsed.note, {
         topic: parsed.topic,
         runId: parsed.runId,
+        teamId: parsed.teamId ?? parsedCommon.teamId,
       });
       printHeader(`Added ${result.entry.memoryId}`);
+      if (result.teamId) {
+        printKeyValue('team', result.teamId);
+      }
       printKeyValue('topic', result.topic);
       printKeyValue('file', result.topicPath);
       printKeyValue('index', result.indexPath);
@@ -96,15 +103,15 @@ async function runMemory(subcommand, args) {
       return;
     }
     case 'rebuild': {
-      const result = await memoryRebuild();
-      printHeader('Memory index rebuilt');
+      const result = await memoryRebuild(teamOptions);
+      printHeader(result.namespace === 'team' ? `Memory index rebuilt team/${result.teamId}` : 'Memory index rebuilt');
       printKeyValue('index', result.indexPath);
       printKeyValue('topics', result.topics.length);
       return;
     }
     case 'compact': {
-      const result = await memoryCompact();
-      printHeader('Memory compact complete');
+      const result = await memoryCompact(teamOptions);
+      printHeader(result.namespace === 'team' ? `Memory compact complete team/${result.teamId}` : 'Memory compact complete');
       printKeyValue('topics updated', result.topicsUpdated);
       printKeyValue('entries checked', result.entriesChecked);
       printKeyValue('stale marked', result.staleMarked);
@@ -113,13 +120,18 @@ async function runMemory(subcommand, args) {
       return;
     }
     default:
-      throw new Error('Usage: /memory show [topic] | /memory search <query> | /memory add <note> --run <runId> [--topic <topic>] | /memory rebuild | /memory compact');
+      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--team <teamId>] | /memory add <note> --run <runId> [--topic <topic>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
   }
 }
 
-async function runPaths() {
-  const paths = await getMemoryPaths();
+async function runPaths(args) {
+  const parsed = extractTeamFlag(args);
+  const paths = await getMemoryPaths({ teamId: parsed.teamId });
   printHeader('Memory paths');
+  printKeyValue('namespace', paths.namespace);
+  if (paths.teamId) {
+    printKeyValue('team', paths.teamId);
+  }
   printKeyValue('repo', paths.repoRoot);
   printKeyValue('memory dir', paths.memoryDir);
   printKeyValue('index', paths.memoryIndex);
@@ -131,6 +143,7 @@ function parseAddArgs(args) {
   const noteParts = [];
   let topic = 'general';
   let runId = '';
+  let teamId = null;
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -144,6 +157,11 @@ function parseAddArgs(args) {
       index += 1;
       continue;
     }
+    if (value === '--team') {
+      teamId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
     noteParts.push(value);
   }
 
@@ -151,6 +169,27 @@ function parseAddArgs(args) {
     note: noteParts.join(' ').trim(),
     topic,
     runId,
+    teamId,
+  };
+}
+
+function extractTeamFlag(args) {
+  const filtered = [];
+  let teamId = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--team') {
+      teamId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    filtered.push(value);
+  }
+
+  return {
+    teamId,
+    args: filtered,
   };
 }
 
@@ -168,12 +207,12 @@ function printKeyValue(key, value) {
 
 function printHelp() {
   console.log('Usage:');
-  console.log('  pnpm run memory -- /memory show [topic]');
-  console.log('  pnpm run memory -- /memory search <query>');
-  console.log('  pnpm run memory -- /memory add <note> --run <runId> [--topic <topic>]');
-  console.log('  pnpm run memory -- /memory rebuild');
-  console.log('  pnpm run memory -- /memory compact');
-  console.log('  pnpm run memory -- paths');
+  console.log('  pnpm run memory -- /memory show [topic] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory search <query> [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory add <note> --run <runId> [--topic <topic>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory rebuild [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory compact [--team <teamId>]');
+  console.log('  pnpm run memory -- paths [--team <teamId>]');
 }
 
 main().catch((error) => {

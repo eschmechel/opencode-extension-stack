@@ -14,27 +14,34 @@ const MEMORY_TOPIC_VERSION = 1;
 export async function getMemoryPaths(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const paths = getOpencodePaths(repoRoot);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
   return {
     repoRoot,
-    memoryDir: paths.memoryDir,
-    memoryIndex: paths.memoryIndex,
-    memoryTopicsDir: paths.memoryTopicsDir,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
+    memoryDir: namespacePaths.memoryDir,
+    memoryIndex: namespacePaths.indexPath,
+    memoryTopicsDir: namespacePaths.topicsDir,
     memoryTeamDir: paths.memoryTeamDir,
   };
 }
 
 export async function memoryShow(topic, options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
-  const paths = getOpencodePaths(repoRoot);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
 
   if (topic && topic.trim()) {
     const slug = slugifyTopic(topic);
-    const topicPath = getTopicPath(repoRoot, slug);
-    const topicFile = await loadTopicFile(repoRoot, slug);
-    const summary = buildTopicSummary(topicFile);
+    const topicPath = getTopicPath(namespacePaths, slug);
+    const topicFile = await loadTopicFile(namespacePaths, slug);
+    const summary = buildTopicSummary(namespacePaths, topicFile);
 
     return {
       repoRoot,
+      namespace: namespacePaths.namespace,
+      teamId: namespacePaths.teamId,
       scope: 'topic',
       topic: slug,
       topicPath,
@@ -43,13 +50,15 @@ export async function memoryShow(topic, options = {}) {
     };
   }
 
-  const summaries = await loadTopicSummaries(repoRoot);
-  const markdown = await fs.readFile(paths.memoryIndex, 'utf8').catch(() => buildIndexMarkdown(summaries, toIso(options.now)));
+  const summaries = await loadTopicSummaries(namespacePaths);
+  const markdown = await fs.readFile(namespacePaths.indexPath, 'utf8').catch(() => buildIndexMarkdown(namespacePaths, summaries, toIso(options.now)));
 
   return {
     repoRoot,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
     scope: 'index',
-    indexPath: paths.memoryIndex,
+    indexPath: namespacePaths.indexPath,
     markdown,
     topics: summaries,
   };
@@ -62,7 +71,9 @@ export async function memorySearch(query, options = {}) {
   }
 
   const repoRoot = await prepareRepo(options.cwd);
-  const topicFiles = await loadAllTopicFiles(repoRoot);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
   const loweredQuery = normalizeSearchText(trimmedQuery);
   const matches = [];
 
@@ -80,6 +91,8 @@ export async function memorySearch(query, options = {}) {
 
       matches.push({
         memoryId: entry.memoryId,
+        namespace: namespacePaths.namespace,
+        teamId: namespacePaths.teamId,
         topic: topicFile.topic,
         summary: entry.summary,
         stale: entry.stale,
@@ -87,13 +100,15 @@ export async function memorySearch(query, options = {}) {
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
         evidence: entry.evidence,
-        topicPath: getTopicPath(repoRoot, topicFile.topic),
+        topicPath: getTopicPath(namespacePaths, topicFile.topic),
       });
     }
   }
 
   return {
     repoRoot,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
     query: trimmedQuery,
     count: matches.length,
     matches: matches.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
@@ -113,11 +128,13 @@ export async function memoryAdd(note, options = {}) {
 
   const repoRoot = await prepareRepo(options.cwd);
   const nowIso = toIso(options.now);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
   const topic = slugifyTopic(options.topic ?? 'general');
   const evidence = await resolveRunEvidence(repoRoot, runId, nowIso);
 
   return withRepoLock(repoRoot, async () => {
-    const topicFile = await loadTopicFile(repoRoot, topic);
+    const topicFile = await loadTopicFile(namespacePaths, topic);
     const entry = {
       ...createMemoryEntry({
         topic,
@@ -134,12 +151,14 @@ export async function memoryAdd(note, options = {}) {
     topicFile.entries.push(entry);
     topicFile.updatedAt = nowIso;
 
-    const topicPath = getTopicPath(repoRoot, topic);
+    const topicPath = getTopicPath(namespacePaths, topic);
     await saveTopicFile(topicPath, topicFile);
-    const rebuilt = await rebuildIndexLocked(repoRoot, nowIso);
+    const rebuilt = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
 
     return {
       repoRoot,
+      namespace: namespacePaths.namespace,
+      teamId: namespacePaths.teamId,
       topic,
       topicPath,
       indexPath: rebuilt.indexPath,
@@ -151,15 +170,19 @@ export async function memoryAdd(note, options = {}) {
 export async function memoryRebuild(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const nowIso = toIso(options.now);
-  return withRepoLock(repoRoot, async () => rebuildIndexLocked(repoRoot, nowIso));
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  return withRepoLock(repoRoot, async () => rebuildIndexLocked(repoRoot, namespacePaths, nowIso));
 }
 
 export async function memoryCompact(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const nowIso = toIso(options.now);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
 
   return withRepoLock(repoRoot, async () => {
-    const topicFiles = await loadAllTopicFiles(repoRoot);
+    const topicFiles = await loadAllTopicFiles(namespacePaths);
     let topicsUpdated = 0;
     let entriesChecked = 0;
     let staleMarked = 0;
@@ -215,13 +238,15 @@ export async function memoryCompact(options = {}) {
 
       topicFile.entries = entries;
       topicFile.updatedAt = nowIso;
-      await saveTopicFile(getTopicPath(repoRoot, topicFile.topic), topicFile);
+      await saveTopicFile(getTopicPath(namespacePaths, topicFile.topic), topicFile);
       topicsUpdated += 1;
     }
 
-    const rebuilt = await rebuildIndexLocked(repoRoot, nowIso);
+    const rebuilt = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
     return {
       repoRoot,
+      namespace: namespacePaths.namespace,
+      teamId: namespacePaths.teamId,
       indexPath: rebuilt.indexPath,
       topics: rebuilt.topics,
       topicsUpdated,
@@ -232,30 +257,30 @@ export async function memoryCompact(options = {}) {
   });
 }
 
-async function rebuildIndexLocked(repoRoot, nowIso) {
-  const paths = getOpencodePaths(repoRoot);
-  const topics = await loadTopicSummaries(repoRoot);
-  const markdown = buildIndexMarkdown(topics, nowIso);
-  await writeFileAtomic(paths.memoryIndex, markdown);
+async function rebuildIndexLocked(repoRoot, namespacePaths, nowIso) {
+  const topics = await loadTopicSummaries(namespacePaths);
+  const markdown = buildIndexMarkdown(namespacePaths, topics, nowIso);
+  await writeFileAtomic(namespacePaths.indexPath, markdown);
   return {
     repoRoot,
-    indexPath: paths.memoryIndex,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
+    indexPath: namespacePaths.indexPath,
     generatedAt: nowIso,
     topics,
     markdown,
   };
 }
 
-async function loadTopicSummaries(repoRoot) {
-  const topicFiles = await loadAllTopicFiles(repoRoot);
+async function loadTopicSummaries(namespacePaths) {
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
   return topicFiles
-    .map(buildTopicSummary)
+    .map((topicFile) => buildTopicSummary(namespacePaths, topicFile))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-async function loadAllTopicFiles(repoRoot) {
-  const paths = getOpencodePaths(repoRoot);
-  const entries = await fs.readdir(paths.memoryTopicsDir, { withFileTypes: true }).catch(() => []);
+async function loadAllTopicFiles(namespacePaths) {
+  const entries = await fs.readdir(namespacePaths.topicsDir, { withFileTypes: true }).catch(() => []);
   const topicFiles = [];
 
   for (const entry of entries) {
@@ -264,14 +289,14 @@ async function loadAllTopicFiles(repoRoot) {
     }
 
     const topic = entry.name.slice(0, -'.json'.length);
-    topicFiles.push(await loadTopicFile(repoRoot, topic));
+    topicFiles.push(await loadTopicFile(namespacePaths, topic));
   }
 
   return topicFiles;
 }
 
-async function loadTopicFile(repoRoot, topic) {
-  const topicPath = getTopicPath(repoRoot, topic);
+async function loadTopicFile(namespacePaths, topic) {
+  const topicPath = getTopicPath(namespacePaths, topic);
   try {
     const raw = JSON.parse(await fs.readFile(topicPath, 'utf8'));
     return parseTopicFile(raw, topic);
@@ -362,7 +387,7 @@ function createEmptyTopicFile(topic, nowIso) {
   };
 }
 
-function buildTopicSummary(topicFile) {
+function buildTopicSummary(namespacePaths, topicFile) {
   const sortedEntries = sortEntriesNewestFirst(topicFile.entries);
   const activeCount = sortedEntries.filter((entry) => !entry.stale).length;
   const staleCount = sortedEntries.length - activeCount;
@@ -371,7 +396,7 @@ function buildTopicSummary(topicFile) {
 
   return {
     topic: topicFile.topic,
-    topicPath: `topics/${topicFile.topic}.json`,
+    topicPath: toDisplayRelative(namespacePaths.memoryDir, getTopicPath(namespacePaths, topicFile.topic)),
     entryCount: sortedEntries.length,
     activeCount,
     staleCount,
@@ -468,11 +493,13 @@ async function resolveRunEvidence(repoRoot, runId, capturedAt) {
   };
 }
 
-function buildIndexMarkdown(topics, nowIso) {
+function buildIndexMarkdown(namespacePaths, topics, nowIso) {
   const lines = [
     '# MEMORY',
     '',
     'Evidence-backed memory pointer index.',
+    '',
+    `Namespace: ${namespacePaths.namespace === 'team' ? `team/${namespacePaths.teamId}` : 'repo'}`,
     '',
     `Generated at: ${nowIso}`,
     '',
@@ -507,12 +534,44 @@ async function prepareRepo(cwd) {
   return repoRoot;
 }
 
-function getTopicPath(repoRoot, topic) {
-  return path.join(getOpencodePaths(repoRoot).memoryTopicsDir, `${slugifyTopic(topic)}.json`);
+function getNamespacePaths(repoRoot, options = {}) {
+  const paths = getOpencodePaths(repoRoot);
+  if (!options.teamId) {
+    return {
+      namespace: 'repo',
+      teamId: null,
+      memoryDir: paths.memoryDir,
+      indexPath: paths.memoryIndex,
+      topicsDir: paths.memoryTopicsDir,
+    };
+  }
+
+  const teamId = slugifyRequired(options.teamId, 'teamId');
+  const memoryDir = path.join(paths.memoryTeamDir, teamId);
+  return {
+    namespace: 'team',
+    teamId,
+    memoryDir,
+    indexPath: path.join(memoryDir, 'MEMORY.md'),
+    topicsDir: path.join(memoryDir, 'topics'),
+  };
+}
+
+async function ensureNamespaceLayout(namespacePaths) {
+  await fs.mkdir(namespacePaths.memoryDir, { recursive: true });
+  await fs.mkdir(namespacePaths.topicsDir, { recursive: true });
+}
+
+function getTopicPath(namespacePaths, topic) {
+  return path.join(namespacePaths.topicsDir, `${slugifyTopic(topic)}.json`);
 }
 
 function toRepoRelative(repoRoot, filePath) {
   return path.relative(repoRoot, filePath) || '.';
+}
+
+function toDisplayRelative(rootDir, filePath) {
+  return path.relative(rootDir, filePath).split(path.sep).join('/') || '.';
 }
 
 function fromRepoRelative(repoRoot, relativePath) {
@@ -526,6 +585,16 @@ function slugifyTopic(topic) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return slug || 'general';
+}
+
+function slugifyRequired(value, fieldName) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) {
+    throw new Error(`A non-empty ${fieldName} is required.`);
+  }
+
+  const slug = slugifyTopic(value);
+  return slug;
 }
 
 function buildCompactKey(entry) {

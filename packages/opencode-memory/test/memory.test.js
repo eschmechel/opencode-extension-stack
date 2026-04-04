@@ -90,6 +90,40 @@ test('memorySearch returns targeted matches by topic and summary text', async ()
   assert.match(byText.matches[0].summary, /jobs\.json/);
 });
 
+test('team memory namespaces stay isolated from repo memory', async () => {
+  const repoRoot = await createTempRepo();
+  await writeRunArtifact(repoRoot, 'run_global');
+  await writeRunArtifact(repoRoot, 'run_team');
+
+  await memoryAdd('Global queue memory.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_global',
+  });
+  const teamAdded = await memoryAdd('Team-specific worker memory.', {
+    cwd: repoRoot,
+    teamId: 'release-team',
+    topic: 'Workers',
+    runId: 'run_team',
+  });
+
+  assert.match(teamAdded.indexPath, /memory\/team\/release-team\/MEMORY\.md$/);
+  assert.match(teamAdded.topicPath, /memory\/team\/release-team\/topics\/workers\.json$/);
+
+  const globalIndex = await memoryShow('', { cwd: repoRoot });
+  const teamIndex = await memoryShow('', { cwd: repoRoot, teamId: 'release-team' });
+  assert.equal(globalIndex.topics.length, 1);
+  assert.equal(globalIndex.topics[0].topic, 'queue');
+  assert.equal(teamIndex.topics.length, 1);
+  assert.equal(teamIndex.topics[0].topic, 'workers');
+
+  const globalSearch = await memorySearch('team-specific', { cwd: repoRoot });
+  const teamSearch = await memorySearch('team-specific', { cwd: repoRoot, teamId: 'release-team' });
+  assert.equal(globalSearch.count, 0);
+  assert.equal(teamSearch.count, 1);
+  assert.equal(teamSearch.matches[0].teamId, 'release-team');
+});
+
 test('memoryAdd rejects failed run evidence', async () => {
   const repoRoot = await createTempRepo();
   await writeRunArtifact(repoRoot, 'run_failed', { exitCode: 1 });

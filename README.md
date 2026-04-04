@@ -60,11 +60,11 @@ Run worker lifecycle commands with `pnpm run orchestrator -- ...`.
 
 Run memory commands with `pnpm run memory -- ...`.
 
-- `/memory show [topic]`
-- `/memory search <query>`
-- `/memory add <note> --run <runId> [--topic <topic>]`
-- `/memory rebuild`
-- `/memory compact`
+- `/memory show [topic] [--team <teamId>]`
+- `/memory search <query> [--team <teamId>]`
+- `/memory add <note> --run <runId> [--topic <topic>] [--team <teamId>]`
+- `/memory rebuild [--team <teamId>]`
+- `/memory compact [--team <teamId>]`
 
 Examples:
 
@@ -91,6 +91,7 @@ pnpm run orchestrator -- /worker list
 pnpm run memory -- /memory add "Queue retries are delayed by retryAt" --topic "queue retry" --run <run-id>
 pnpm run memory -- /memory show
 pnpm run memory -- /memory search retryAt
+pnpm run memory -- /memory add "Release team keeps worker notes separate" --team release-team --topic workers --run <run-id>
 ```
 
 Supported schedule formats in the current slice:
@@ -171,8 +172,10 @@ Each run directory can contain:
 ## Memory Behavior
 
 - memory entries are stored per topic under `.opencode/memory/topics/*.json`
+- team-local memory namespaces live under `.opencode/memory/team/<teamId>/`
 - `MEMORY.md` is a generated pointer index, rebuilt from topic files
 - `/memory add` currently requires `--run <runId>` and only accepts successful run evidence
+- all memory commands default to repo-wide memory and can target a team namespace with `--team <teamId>`
 - `/memory compact` refreshes stale markers when backing run artifacts disappear or stop being valid
 - duplicate memory entries are compacted by marking older duplicates stale instead of deleting them
 
