@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { ensureStateLayout, getOpencodePaths } from '../../opencode-core/src/index.js';
+import { ensureStateLayout, getOpencodePaths, loadConfig, saveConfig } from '../../opencode-core/src/index.js';
 
 import {
   memoryAdd,
@@ -252,6 +252,43 @@ test('memoryAdd accepts successful team synthesis evidence', async () => {
   assert.equal(search.matches[0].topic, 'teams');
 });
 
+test('memoryRebuild reports cross-topic merge candidates and drift alerts', async () => {
+  const repoRoot = await createTempRepo();
+  await writeRunArtifact(repoRoot, 'run_merge_one');
+  await writeRunArtifact(repoRoot, 'run_merge_two');
+  await writeRunArtifact(repoRoot, 'run_drift_one');
+  await writeRunArtifact(repoRoot, 'run_drift_two');
+
+  await memoryAdd('Queue retry policy uses exponential backoff.', {
+    cwd: repoRoot,
+    topic: 'Queue Retry Policy',
+    runId: 'run_merge_one',
+  });
+  await memoryAdd('Retry queue policy uses exponential backoff.', {
+    cwd: repoRoot,
+    topic: 'Retry Queue Policy',
+    runId: 'run_merge_two',
+  });
+  await memoryAdd('Budget alerts page operators quickly.', {
+    cwd: repoRoot,
+    topic: 'Execution',
+    runId: 'run_drift_one',
+  });
+  await memoryAdd('Workers archive stdout after task completion.', {
+    cwd: repoRoot,
+    topic: 'Execution',
+    runId: 'run_drift_two',
+  });
+
+  const rebuilt = await memoryRebuild({ cwd: repoRoot, now: '2026-04-04T14:00:00.000Z' });
+
+  assert.equal(rebuilt.mergeCandidates.length >= 1, true);
+  assert.equal(rebuilt.mergeCandidates.some((candidate) => candidate.topics.includes('queue-retry-policy') && candidate.topics.includes('retry-queue-policy')), true);
+  assert.equal(rebuilt.driftAlerts.some((alert) => alert.topic === 'execution'), true);
+  assert.match(rebuilt.markdown, /## Merge Candidates/);
+  assert.match(rebuilt.markdown, /## Drift Alerts/);
+});
+
 test('memoryCompact marks entries stale when run evidence disappears', async () => {
   const repoRoot = await createTempRepo();
   const paths = getOpencodePaths(repoRoot);
@@ -434,6 +471,69 @@ test('memory search and stale views can filter to repairable stale entries', asy
   assert.equal(search.count, 1);
   assert.equal(search.matches[0].memoryId, repairable.entry.memoryId);
   assert.equal(search.matches[0].staleReason, 'missing_run_result');
+});
+
+test('memory policy config changes compaction and repair discovery thresholds', async () => {
+  const repoRoot = await createTempRepo();
+  const paths = getOpencodePaths(repoRoot);
+  const config = await loadConfig(repoRoot);
+  config.memory.compact.topicConsolidationMinActive = 4;
+  config.memory.repair.maxListedEntries = 1;
+  await saveConfig(repoRoot, config);
+
+  await writeRunArtifact(repoRoot, 'run_threshold_one');
+  await writeRunArtifact(repoRoot, 'run_threshold_two');
+  await writeRunArtifact(repoRoot, 'run_threshold_three');
+  await writeRunArtifact(repoRoot, 'run_threshold_four');
+  await writeRunArtifact(repoRoot, 'run_threshold_five');
+
+  await memoryAdd('Queue note one.', {
+    cwd: repoRoot,
+    topic: 'Queue Threshold',
+    runId: 'run_threshold_one',
+    now: '2026-04-04T12:01:00.000Z',
+  });
+  await memoryAdd('Queue note two.', {
+    cwd: repoRoot,
+    topic: 'Queue Threshold',
+    runId: 'run_threshold_two',
+    now: '2026-04-04T12:02:00.000Z',
+  });
+  await memoryAdd('Queue note three.', {
+    cwd: repoRoot,
+    topic: 'Queue Threshold',
+    runId: 'run_threshold_three',
+    now: '2026-04-04T12:03:00.000Z',
+  });
+
+  const compacted = await memoryCompact({ cwd: repoRoot, now: '2026-04-04T12:10:00.000Z' });
+  assert.equal(compacted.consolidatedCreated, 0);
+
+  const queueView = await memoryShow('Queue Threshold', { cwd: repoRoot });
+  assert.equal(queueView.summary.activeCount, 3);
+
+  await memoryAdd('Repair threshold first.', {
+    cwd: repoRoot,
+    topic: 'Repair Threshold',
+    runId: 'run_threshold_four',
+    now: '2026-04-04T12:04:00.000Z',
+  });
+  await memoryAdd('Repair threshold second.', {
+    cwd: repoRoot,
+    topic: 'Repair Threshold',
+    runId: 'run_threshold_five',
+    now: '2026-04-04T12:05:00.000Z',
+  });
+
+  await fs.rm(path.join(paths.runsDir, 'run_threshold_four', 'result.json'));
+  await fs.rm(path.join(paths.runsDir, 'run_threshold_five', 'result.json'));
+  const staleCompacted = await memoryCompact({ cwd: repoRoot, now: '2026-04-04T12:20:00.000Z' });
+  assert.equal(staleCompacted.staleMarked >= 2, true);
+
+  const stale = await memoryStale({ cwd: repoRoot, repairableOnly: true });
+  assert.equal(stale.totalCount, 2);
+  assert.equal(stale.count, 1);
+  assert.equal(stale.truncated, true);
 });
 
 test('memoryRebuild restores MEMORY.md from topic files', async () => {

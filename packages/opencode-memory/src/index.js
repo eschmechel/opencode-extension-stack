@@ -6,13 +6,18 @@ import {
   ensureStateLayout,
   findRepoRoot,
   getOpencodePaths,
+  loadConfig,
   withRepoLock,
 } from '../../opencode-core/src/index.js';
 import { teamShow } from '../../opencode-orchestrator/src/index.js';
 
 const MEMORY_TOPIC_VERSION = 1;
-const TOPIC_CONSOLIDATION_MIN_ACTIVE = 3;
-const TOPIC_CONSOLIDATION_SUMMARY_LIMIT = 6;
+const TEXT_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'under', 'over', 'into', 'onto', 'than',
+  'then', 'when', 'where', 'what', 'which', 'while', 'will', 'would', 'should', 'could', 'about', 'after',
+  'before', 'there', 'their', 'them', 'they', 'your', 'ours', 'have', 'has', 'had', 'were', 'was', 'are',
+  'is', 'not', 'but', 'too', 'can', 'via', 'per', 'all', 'any', 'its', 'out', 'off', 'one', 'two', 'three',
+]);
 
 export async function getMemoryPaths(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
@@ -53,17 +58,19 @@ export async function memoryShow(topic, options = {}) {
     };
   }
 
-  const summaries = await loadTopicSummaries(namespacePaths);
-  const markdown = await fs.readFile(namespacePaths.indexPath, 'utf8').catch(() => buildIndexMarkdown(namespacePaths, summaries, toIso(options.now)));
+  const indexView = await buildIndexView(repoRoot, namespacePaths, toIso(options.now));
 
   return {
     repoRoot,
     namespace: namespacePaths.namespace,
     teamId: namespacePaths.teamId,
     scope: 'index',
-    indexPath: namespacePaths.indexPath,
-    markdown,
-    topics: summaries,
+    indexPath: indexView.indexPath,
+    markdown: indexView.markdown,
+    topics: indexView.topics,
+    mergeCandidates: indexView.mergeCandidates,
+    driftAlerts: indexView.driftAlerts,
+    policy: indexView.policy,
   };
 }
 
@@ -76,6 +83,7 @@ export async function memorySearch(query, options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const namespacePaths = getNamespacePaths(repoRoot, options);
   await ensureNamespaceLayout(namespacePaths);
+  const policy = await loadMemoryPolicy(repoRoot);
   const topicFiles = await loadAllTopicFiles(namespacePaths);
   const loweredQuery = normalizeSearchText(trimmedQuery);
   const matches = [];
@@ -115,13 +123,21 @@ export async function memorySearch(query, options = {}) {
     }
   }
 
+  const totalCount = matches.length;
+  const limit = resolveRepairListLimit(policy, options, options.repairableOnly);
+  const limitedMatches = matches
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, limit);
+
   return {
     repoRoot,
     namespace: namespacePaths.namespace,
     teamId: namespacePaths.teamId,
     query: trimmedQuery,
-    count: matches.length,
-    matches: matches.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    count: limitedMatches.length,
+    totalCount,
+    truncated: totalCount > limitedMatches.length,
+    matches: limitedMatches,
   };
 }
 
@@ -129,6 +145,7 @@ export async function memoryStale(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const namespacePaths = getNamespacePaths(repoRoot, options);
   await ensureNamespaceLayout(namespacePaths);
+  const policy = await loadMemoryPolicy(repoRoot);
   const topicFiles = await loadAllTopicFiles(namespacePaths);
   const entries = [];
 
@@ -159,13 +176,21 @@ export async function memoryStale(options = {}) {
     }
   }
 
+  const totalCount = entries.length;
+  const limit = resolveRepairListLimit(policy, options, options.repairableOnly);
+  const limitedEntries = entries
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, limit);
+
   return {
     repoRoot,
     namespace: namespacePaths.namespace,
     teamId: namespacePaths.teamId,
-    count: entries.length,
+    count: limitedEntries.length,
+    totalCount,
+    truncated: totalCount > limitedEntries.length,
     repairableOnly: Boolean(options.repairableOnly),
-    entries: entries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    entries: limitedEntries,
   };
 }
 
@@ -300,6 +325,7 @@ export async function memoryCompact(options = {}) {
   const nowIso = toIso(options.now);
   const namespacePaths = getNamespacePaths(repoRoot, options);
   await ensureNamespaceLayout(namespacePaths);
+  const policy = await loadMemoryPolicy(repoRoot);
 
   return withRepoLock(repoRoot, async () => {
     const topicFiles = await loadAllTopicFiles(namespacePaths);
@@ -354,7 +380,7 @@ export async function memoryCompact(options = {}) {
         activeKeys.add(compactKey);
       }
 
-      const consolidation = consolidateActiveTopicEntries(topicFile.topic, entries, nowIso);
+      const consolidation = consolidateActiveTopicEntries(topicFile.topic, entries, nowIso, policy.compact);
       if (consolidation.changed) {
         changed = true;
         staleMarked += consolidation.staleMarked;
@@ -385,13 +411,16 @@ export async function memoryCompact(options = {}) {
       duplicatesCompacted,
       consolidatedCreated,
       entriesConsolidated,
+      mergeCandidates: rebuilt.mergeCandidates,
+      driftAlerts: rebuilt.driftAlerts,
+      policy: rebuilt.policy,
     };
   });
 }
 
 async function rebuildIndexLocked(repoRoot, namespacePaths, nowIso) {
-  const topics = await loadTopicSummaries(namespacePaths);
-  const markdown = buildIndexMarkdown(namespacePaths, topics, nowIso);
+  const indexView = await buildIndexView(repoRoot, namespacePaths, nowIso);
+  const { topics, markdown, mergeCandidates, driftAlerts, policy } = indexView;
   await writeFileAtomic(namespacePaths.indexPath, markdown);
   return {
     repoRoot,
@@ -401,6 +430,32 @@ async function rebuildIndexLocked(repoRoot, namespacePaths, nowIso) {
     generatedAt: nowIso,
     topics,
     markdown,
+    mergeCandidates,
+    driftAlerts,
+    policy,
+  };
+}
+
+async function buildIndexView(repoRoot, namespacePaths, nowIso) {
+  const policy = await loadMemoryPolicy(repoRoot);
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
+  const topics = topicFiles
+    .map((topicFile) => buildTopicSummary(namespacePaths, topicFile))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const mergeCandidates = buildCrossTopicMergeCandidates(topicFiles, policy.compact);
+  const driftAlerts = buildTopicDriftAlerts(topicFiles, policy.compact);
+  const markdown = buildIndexMarkdown(namespacePaths, topics, mergeCandidates, driftAlerts, nowIso);
+
+  return {
+    repoRoot,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
+    indexPath: namespacePaths.indexPath,
+    topics,
+    mergeCandidates,
+    driftAlerts,
+    markdown,
+    policy,
   };
 }
 
@@ -813,7 +868,7 @@ async function resolveEvidenceFromOptions(repoRoot, options, capturedAt, actionN
   return resolveTeamEvidence(repoRoot, teamResultId, capturedAt);
 }
 
-function buildIndexMarkdown(namespacePaths, topics, nowIso) {
+function buildIndexMarkdown(namespacePaths, topics, mergeCandidates, driftAlerts, nowIso) {
   const lines = [
     '# MEMORY',
     '',
@@ -845,13 +900,184 @@ function buildIndexMarkdown(namespacePaths, topics, nowIso) {
     lines.push('');
   }
 
+  if (mergeCandidates.length > 0) {
+    lines.push('## Merge Candidates', '');
+    for (const candidate of mergeCandidates) {
+      lines.push(`- \`${candidate.topics.join('` <-> `')}\``);
+      lines.push(`  shared terms: ${candidate.sharedTerms.join(', ')}`);
+      lines.push(`  similarity: ${candidate.similarity.toFixed(2)}`);
+    }
+    lines.push('');
+  }
+
+  if (driftAlerts.length > 0) {
+    lines.push('## Drift Alerts', '');
+    for (const alert of driftAlerts) {
+      lines.push(`- \`${alert.topic}\` active entries=${alert.activeCount} max similarity=${alert.maxPairSimilarity.toFixed(2)}`);
+      for (const summary of alert.sampleSummaries) {
+        lines.push(`  - ${summary}`);
+      }
+    }
+    lines.push('');
+  }
+
   return `${lines.join('\n')}\n`;
+}
+
+function buildCrossTopicMergeCandidates(topicFiles, compactPolicy) {
+  const signals = topicFiles
+    .map((topicFile) => buildTopicSignal(topicFile))
+    .filter((signal) => signal.activeEntries.length > 0);
+  const candidates = [];
+
+  for (let index = 0; index < signals.length; index += 1) {
+    for (let compareIndex = index + 1; compareIndex < signals.length; compareIndex += 1) {
+      const left = signals[index];
+      const right = signals[compareIndex];
+      const sharedTerms = intersectSortedTerms(left.terms, right.terms);
+      if (sharedTerms.length < compactPolicy.crossTopicMergeMinSharedTerms) {
+        continue;
+      }
+
+      const similarity = overlapCoefficient(left.terms, right.terms);
+      if (similarity < compactPolicy.crossTopicMergeMinSimilarity) {
+        continue;
+      }
+
+      candidates.push({
+        topics: [left.topic, right.topic],
+        sharedTerms,
+        similarity,
+        activeCounts: [left.activeEntries.length, right.activeEntries.length],
+      });
+    }
+  }
+
+  return candidates.sort((left, right) => right.similarity - left.similarity || left.topics.join(':').localeCompare(right.topics.join(':')));
+}
+
+function buildTopicDriftAlerts(topicFiles, compactPolicy) {
+  const alerts = [];
+
+  for (const topicFile of topicFiles) {
+    const activeNotes = topicFile.entries.filter((entry) => !entry.stale && entry.entryType !== 'consolidated');
+    if (activeNotes.length < compactPolicy.driftMinActiveEntries) {
+      continue;
+    }
+
+    let maxPairSimilarity = 0;
+    for (let index = 0; index < activeNotes.length; index += 1) {
+      for (let compareIndex = index + 1; compareIndex < activeNotes.length; compareIndex += 1) {
+        const similarity = jaccardSimilarity(
+          tokenizeSignalText(activeNotes[index].summary),
+          tokenizeSignalText(activeNotes[compareIndex].summary),
+        );
+        maxPairSimilarity = Math.max(maxPairSimilarity, similarity);
+      }
+    }
+
+    if (maxPairSimilarity > compactPolicy.driftMaxPairSimilarity) {
+      continue;
+    }
+
+    alerts.push({
+      topic: topicFile.topic,
+      activeCount: activeNotes.length,
+      maxPairSimilarity,
+      sampleSummaries: activeNotes.slice(0, 3).map((entry) => limitText(entry.summary, 100)),
+    });
+  }
+
+  return alerts.sort((left, right) => left.maxPairSimilarity - right.maxPairSimilarity || right.activeCount - left.activeCount);
+}
+
+function buildTopicSignal(topicFile) {
+  const activeEntries = topicFile.entries.filter((entry) => !entry.stale);
+  const terms = new Set(tokenizeSignalText(topicFile.topic));
+  for (const entry of activeEntries) {
+    for (const term of tokenizeSignalText(entry.summary)) {
+      terms.add(term);
+    }
+  }
+
+  return {
+    topic: topicFile.topic,
+    activeEntries,
+    terms: [...terms].sort(),
+  };
+}
+
+function tokenizeSignalText(value) {
+  const base = String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  if (!base) {
+    return [];
+  }
+
+  const terms = [];
+  for (const token of base.split(/\s+/)) {
+    const normalized = normalizeSignalToken(token);
+    if (!normalized || TEXT_STOPWORDS.has(normalized)) {
+      continue;
+    }
+    terms.push(normalized);
+  }
+  return [...new Set(terms)].sort();
+}
+
+function normalizeSignalToken(token) {
+  const trimmed = token.trim();
+  if (trimmed.length < 4) {
+    return null;
+  }
+  if (trimmed.endsWith('ies') && trimmed.length > 4) {
+    return `${trimmed.slice(0, -3)}y`;
+  }
+  if (trimmed.endsWith('s') && !trimmed.endsWith('ss') && trimmed.length > 4) {
+    return trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function intersectSortedTerms(left, right) {
+  const rightSet = new Set(right);
+  return left.filter((term) => rightSet.has(term));
+}
+
+function overlapCoefficient(left, right) {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const shared = intersectSortedTerms(left, right).length;
+  return shared / Math.min(left.length, right.length);
+}
+
+function jaccardSimilarity(left, right) {
+  if (left.length === 0 && right.length === 0) {
+    return 1;
+  }
+  const shared = intersectSortedTerms(left, right).length;
+  const union = new Set([...left, ...right]).size;
+  return union === 0 ? 0 : shared / union;
+}
+
+async function loadMemoryPolicy(repoRoot) {
+  return (await loadConfig(repoRoot)).memory;
 }
 
 async function prepareRepo(cwd) {
   const repoRoot = await findRepoRoot(cwd ?? process.cwd());
   await ensureStateLayout(repoRoot);
   return repoRoot;
+}
+
+function resolveRepairListLimit(policy, options, repairableOnly) {
+  if (Number.isInteger(options.limit) && options.limit > 0) {
+    return options.limit;
+  }
+  return repairableOnly ? policy.repair.maxListedEntries : Number.MAX_SAFE_INTEGER;
 }
 
 async function findEntryByMemoryId(namespacePaths, memoryId) {
@@ -968,9 +1194,9 @@ function buildCompactKey(entry) {
   return `${normalizeSearchText(entry.summary)}::${evidenceKey}`;
 }
 
-function consolidateActiveTopicEntries(topic, entries, nowIso) {
+function consolidateActiveTopicEntries(topic, entries, nowIso, compactPolicy) {
   const activeNotes = entries.filter((entry) => !entry.stale && entry.entryType !== 'consolidated');
-  if (activeNotes.length < TOPIC_CONSOLIDATION_MIN_ACTIVE) {
+  if (activeNotes.length < compactPolicy.topicConsolidationMinActive) {
     return {
       changed: false,
       staleMarked: 0,
@@ -992,7 +1218,7 @@ function consolidateActiveTopicEntries(topic, entries, nowIso) {
   let entriesConsolidated = 0;
 
   if (!consolidatedEntry) {
-    consolidatedEntry = createConsolidatedEntry(topic, activeNotes, nowIso);
+    consolidatedEntry = createConsolidatedEntry(topic, activeNotes, nowIso, compactPolicy);
     entries.push(consolidatedEntry);
     changed = true;
     consolidatedCreated += 1;
@@ -1017,12 +1243,12 @@ function consolidateActiveTopicEntries(topic, entries, nowIso) {
   };
 }
 
-function createConsolidatedEntry(topic, sourceEntries, nowIso) {
+function createConsolidatedEntry(topic, sourceEntries, nowIso, compactPolicy) {
   const sortedEntries = sortEntriesNewestFirst(sourceEntries);
   const summaryLines = sortedEntries
-    .slice(0, TOPIC_CONSOLIDATION_SUMMARY_LIMIT)
+    .slice(0, compactPolicy.topicConsolidationSummaryLimit)
     .map((entry) => `- ${entry.summary}`);
-  const remainingCount = Math.max(0, sortedEntries.length - TOPIC_CONSOLIDATION_SUMMARY_LIMIT);
+  const remainingCount = Math.max(0, sortedEntries.length - compactPolicy.topicConsolidationSummaryLimit);
   const summary = [
     `Consolidated topic memory from ${sortedEntries.length} entries:`,
     ...summaryLines,

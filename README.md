@@ -187,6 +187,8 @@ Each run directory can contain:
 - `/memory compact` refreshes stale markers when backing run artifacts disappear or stop being valid
 - duplicate memory entries are compacted by marking older duplicates stale instead of deleting them
 - topics with several active notes are consolidated into a single evidence-backed summary entry and the superseded notes are marked stale with an audit link
+- `MEMORY.md` now includes heuristic merge candidates across topics and drift alerts for low-overlap active notes
+- cross-topic heuristics are advisory only; they surface candidates without silently merging topic files
 
 `config.json` now supports:
 
@@ -208,6 +210,19 @@ Each run directory can contain:
       "maxArchiveAgeDays": 30,
       "maxArchiveBytes": 50000000,
       "allowDeleteArchived": false
+    }
+  },
+  "memory": {
+    "compact": {
+      "topicConsolidationMinActive": 3,
+      "topicConsolidationSummaryLimit": 6,
+      "crossTopicMergeMinSharedTerms": 2,
+      "crossTopicMergeMinSimilarity": 0.8,
+      "driftMinActiveEntries": 2,
+      "driftMaxPairSimilarity": 0.35
+    },
+    "repair": {
+      "maxListedEntries": 20
     }
   }
 }

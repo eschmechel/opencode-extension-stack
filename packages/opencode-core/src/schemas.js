@@ -38,6 +38,7 @@ export function defaultConfig() {
     notifications: {
       console: true,
     },
+    memory: defaultMemoryPolicy(),
     retention: {
       workers: defaultRetentionPolicy(),
       teams: defaultRetentionPolicy(),
@@ -169,6 +170,7 @@ export function parseConfig(value) {
     notifications: {
       console: readBoolean(input.notifications?.console, defaults.notifications.console, 'notifications.console'),
     },
+    memory: parseMemoryPolicy(input.memory, defaults.memory, 'memory'),
     retention: {
       workers: parseRetentionPolicy(input.retention?.workers, defaults.retention.workers, 'retention.workers'),
       teams: parseRetentionPolicy(input.retention?.teams, defaults.retention.teams, 'retention.teams'),
@@ -379,6 +381,42 @@ function defaultRetentionPolicy() {
   };
 }
 
+function defaultMemoryPolicy() {
+  return {
+    compact: {
+      topicConsolidationMinActive: 3,
+      topicConsolidationSummaryLimit: 6,
+      crossTopicMergeMinSharedTerms: 2,
+      crossTopicMergeMinSimilarity: 0.8,
+      driftMinActiveEntries: 2,
+      driftMaxPairSimilarity: 0.35,
+    },
+    repair: {
+      maxListedEntries: 20,
+    },
+  };
+}
+
+function parseMemoryPolicy(value, defaults, fieldName) {
+  const input = isPlainObject(value) ? value : {};
+  const compact = isPlainObject(input.compact) ? input.compact : {};
+  const repair = isPlainObject(input.repair) ? input.repair : {};
+
+  return {
+    compact: {
+      topicConsolidationMinActive: readInteger(compact.topicConsolidationMinActive, defaults.compact.topicConsolidationMinActive, `${fieldName}.compact.topicConsolidationMinActive`, 2),
+      topicConsolidationSummaryLimit: readInteger(compact.topicConsolidationSummaryLimit, defaults.compact.topicConsolidationSummaryLimit, `${fieldName}.compact.topicConsolidationSummaryLimit`, 1),
+      crossTopicMergeMinSharedTerms: readInteger(compact.crossTopicMergeMinSharedTerms, defaults.compact.crossTopicMergeMinSharedTerms, `${fieldName}.compact.crossTopicMergeMinSharedTerms`, 1),
+      crossTopicMergeMinSimilarity: readUnitInterval(compact.crossTopicMergeMinSimilarity, defaults.compact.crossTopicMergeMinSimilarity, `${fieldName}.compact.crossTopicMergeMinSimilarity`),
+      driftMinActiveEntries: readInteger(compact.driftMinActiveEntries, defaults.compact.driftMinActiveEntries, `${fieldName}.compact.driftMinActiveEntries`, 2),
+      driftMaxPairSimilarity: readUnitInterval(compact.driftMaxPairSimilarity, defaults.compact.driftMaxPairSimilarity, `${fieldName}.compact.driftMaxPairSimilarity`),
+    },
+    repair: {
+      maxListedEntries: readInteger(repair.maxListedEntries, defaults.repair.maxListedEntries, `${fieldName}.repair.maxListedEntries`, 1),
+    },
+  };
+}
+
 function parseRetentionPolicy(value, defaults, fieldName) {
   const input = isPlainObject(value) ? value : {};
 
@@ -390,4 +428,16 @@ function parseRetentionPolicy(value, defaults, fieldName) {
     maxArchiveBytes: readNullableInteger(input.maxArchiveBytes, defaults.maxArchiveBytes, `${fieldName}.maxArchiveBytes`, 0),
     allowDeleteArchived: readBoolean(input.allowDeleteArchived, defaults.allowDeleteArchived, `${fieldName}.allowDeleteArchived`),
   };
+}
+
+function readUnitInterval(value, fallback, fieldName) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
+    return value;
+  }
+
+  throw new Error(`Invalid ${fieldName}: expected number between 0 and 1.`);
 }

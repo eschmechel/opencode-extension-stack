@@ -53,8 +53,16 @@ async function runMemory(subcommand, args) {
         printHeader(result.namespace === 'team' ? `Memory index team/${result.teamId}` : 'Memory index');
         printKeyValue('index', result.indexPath);
         printKeyValue('topics', result.topics.length);
+        printKeyValue('merge candidates', result.mergeCandidates.length);
+        printKeyValue('drift alerts', result.driftAlerts.length);
         for (const topicSummary of result.topics) {
           console.log(`- ${topicSummary.topic} active=${topicSummary.activeCount} stale=${topicSummary.staleCount} updated=${topicSummary.updatedAt}`);
+        }
+        for (const candidate of result.mergeCandidates) {
+          console.log(`- merge candidate: ${candidate.topics.join(' <-> ')} shared=${candidate.sharedTerms.join(', ')} similarity=${candidate.similarity.toFixed(2)}`);
+        }
+        for (const alert of result.driftAlerts) {
+          console.log(`- drift alert: ${alert.topic} active=${alert.activeCount} maxSimilarity=${alert.maxPairSimilarity.toFixed(2)}`);
         }
         return;
       }
@@ -103,6 +111,9 @@ async function runMemory(subcommand, args) {
       });
       printHeader(result.namespace === 'team' ? `Memory search team/${result.teamId}: ${result.query}` : `Memory search: ${result.query}`);
       printKeyValue('matches', result.count);
+      if (result.truncated) {
+        printKeyValue('total matches', result.totalCount);
+      }
       if (parsed.staleOnly) {
         printKeyValue('stale only', 'yes');
       }
@@ -123,6 +134,9 @@ async function runMemory(subcommand, args) {
       });
       printHeader(result.namespace === 'team' ? `Stale memory team/${result.teamId}` : 'Stale memory');
       printKeyValue('entries', result.count);
+      if (result.truncated) {
+        printKeyValue('total entries', result.totalCount);
+      }
       if (parsed.repairableOnly) {
         printKeyValue('repairable only', 'yes');
       }
@@ -194,6 +208,8 @@ async function runMemory(subcommand, args) {
       printHeader(result.namespace === 'team' ? `Memory index rebuilt team/${result.teamId}` : 'Memory index rebuilt');
       printKeyValue('index', result.indexPath);
       printKeyValue('topics', result.topics.length);
+      printKeyValue('merge candidates', result.mergeCandidates.length);
+      printKeyValue('drift alerts', result.driftAlerts.length);
       return;
     }
     case 'compact': {
@@ -205,6 +221,8 @@ async function runMemory(subcommand, args) {
       printKeyValue('duplicates compacted', result.duplicatesCompacted);
       printKeyValue('consolidated created', result.consolidatedCreated);
       printKeyValue('entries consolidated', result.entriesConsolidated);
+      printKeyValue('merge candidates', result.mergeCandidates.length);
+      printKeyValue('drift alerts', result.driftAlerts.length);
       printKeyValue('index', result.indexPath);
       return;
     }
