@@ -1,5 +1,11 @@
 # OpenCode Extension Stack
 
+[![CI](https://github.com/eschmechel/opencode-extension-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/eschmechel/opencode-extension-stack/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.x-green.svg)](https://nodejs.org/)
+[![pnpm](https://img.shields.io/badge/pnpm-10.28.2-purple.svg)](https://pnpm.io/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/eschmechel/opencode-extension-stack)](https://github.com/eschmechel/opencode-extension-stack/issues)
+
 OpenCode-first extension stack for the durable gaps that OpenCode does not already cover natively: unattended jobs, scheduling, worker orchestration, persistent skeptical memory, prompt packs, and an optional remote bridge.
 
 This repo started as an empty git repository, so the first pass focuses on a clean monorepo scaffold plus the Phase 0 and early Phase 1 foundation described in the planning docs.
