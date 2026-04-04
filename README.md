@@ -9,7 +9,7 @@ This repo started as an empty git repository, so the first pass focuses on a cle
 - `packages/opencode-core`: shared schemas, config loading, state bootstrap, append-only run logs, repo lock helper
 - `packages/opencode-kairos`: unattended queue and minimal scheduler slice
 - `packages/opencode-orchestrator`: placeholder for detached worker lifecycle
-- `packages/opencode-memory`: placeholder for skeptical memory storage
+- `packages/opencode-memory`: evidence-backed skeptical memory storage, search, and compaction
 - `packages/opencode-packs`: placeholder for reusable command packs
 - `packages/opencode-bridge`: placeholder for remote control plane work
 
@@ -58,6 +58,14 @@ Run worker lifecycle commands with `pnpm run orchestrator -- ...`.
 - `/worker restart <id>`
 - `/worker steer <id> <message>`
 
+Run memory commands with `pnpm run memory -- ...`.
+
+- `/memory show [topic]`
+- `/memory search <query>`
+- `/memory add <note> --run <runId> [--topic <topic>]`
+- `/memory rebuild`
+- `/memory compact`
+
 Examples:
 
 ```bash
@@ -80,6 +88,9 @@ pnpm run orchestrator -- /team show <team-id>
 pnpm run orchestrator -- /parallel 2 "compare two implementation approaches"
 pnpm run orchestrator -- /worker start "investigate flaky test output"
 pnpm run orchestrator -- /worker list
+pnpm run memory -- /memory add "Queue retries are delayed by retryAt" --topic "queue retry" --run <run-id>
+pnpm run memory -- /memory show
+pnpm run memory -- /memory search retryAt
 ```
 
 Supported schedule formats in the current slice:
@@ -156,6 +167,14 @@ Each run directory can contain:
 - archived snapshots are only deleted automatically when policy explicitly allows it
 - `retention status` shows current archive counts, bytes, and prune/delete eligibility
 - `retention apply` enforces policy-driven prune, compaction, and archive rotation
+
+## Memory Behavior
+
+- memory entries are stored per topic under `.opencode/memory/topics/*.json`
+- `MEMORY.md` is a generated pointer index, rebuilt from topic files
+- `/memory add` currently requires `--run <runId>` and only accepts successful run evidence
+- `/memory compact` refreshes stale markers when backing run artifacts disappear or stop being valid
+- duplicate memory entries are compacted by marking older duplicates stale instead of deleting them
 
 `config.json` now supports:
 
