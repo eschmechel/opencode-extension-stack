@@ -8,10 +8,13 @@ import { ensureStateLayout, loadConfig, loadNotifications, saveConfig } from '..
 import { jobsShow, runnerOnce } from '../../opencode-kairos/src/index.js';
 
 import {
+  bridgeServe,
   remoteApprove,
+  remoteAuth,
   remoteEnqueue,
   remoteRevoke,
   remoteStatus,
+  telegramSync,
 } from '../src/index.js';
 
 async function createTempRepo() {
@@ -149,3 +152,180 @@ test('remoteStatus respects maxStatusRequests config when listing recent request
   assert.equal(status.truncated, true);
   assert.match(status.requests[0].prompt, /second remote request/);
 });
+
+test('bridge HTTP API uses bearer auth and signed approval links', async () => {
+  const repoRoot = await createTempRepo();
+  const server = await bridgeServe({ cwd: repoRoot, port: 0 });
+
+  try {
+    let response = await fetch(`${server.baseUrl}/v1/remote/status`);
+    assert.equal(response.status, 401);
+
+    response = await fetch(`${server.baseUrl}/v1/remote/enqueue`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${server.apiToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: 'enqueue through http api', requestedBy: 'http' }),
+    });
+    assert.equal(response.status, 200);
+    const created = await response.json();
+    assert.equal(created.requestedBy, 'http');
+
+    const config = await loadConfig(repoRoot);
+    config.remote.publicBaseUrl = server.baseUrl;
+    await saveConfig(repoRoot, config);
+
+    const gated = await remoteEnqueue('approve through signed link', {
+      cwd: repoRoot,
+      notifyTelegram: false,
+    });
+    assert.notEqual(gated.approvalLinks, null);
+
+    response = await fetch(gated.approvalLinks.approveUrl);
+    assert.equal(response.status, 200);
+    const approved = await response.json();
+    assert.equal(approved.result.jobId !== null, true);
+
+    const auth = await remoteAuth({ cwd: repoRoot });
+    assert.equal(auth.apiToken, server.apiToken);
+  } finally {
+    await server.close();
+  }
+});
+
+test('telegramSync relays enqueue commands into remote bridge state', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.remote.telegram.botToken = 'telegram-token';
+  config.remote.telegram.allowedUserIds = ['123'];
+  config.remote.telegram.apiBaseUrl = 'https://telegram.example.test';
+  await saveConfig(repoRoot, config);
+
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/getUpdates')) {
+      return fakeJsonResponse({
+        ok: true,
+        result: [{
+          update_id: 1,
+          message: {
+            chat: { id: 123 },
+            from: { id: 123 },
+            text: '/enqueue inspect bridge from telegram',
+          },
+        }],
+      });
+    }
+    if (String(url).endsWith('/sendMessage')) {
+      return fakeJsonResponse({ ok: true, result: { message_id: 1 } });
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  try {
+    const synced = await telegramSync({ cwd: repoRoot });
+    assert.equal(synced.updatesProcessed, 1);
+    assert.equal(synced.messagesSent, 1);
+
+    const status = await remoteStatus('', { cwd: repoRoot });
+    assert.equal(status.requests.length, 1);
+    assert.equal(status.requests[0].requestedBy, 'telegram:123');
+    assert.equal(calls.some((entry) => String(entry.url).endsWith('/sendMessage')), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('telegramSync can approve a pending remote request', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.remote.telegram.botToken = 'telegram-token';
+  config.remote.telegram.allowedUserIds = ['123'];
+  config.remote.telegram.apiBaseUrl = 'https://telegram.example.test';
+  await saveConfig(repoRoot, config);
+
+  const request = await remoteEnqueue('pending approval from bridge', {
+    cwd: repoRoot,
+    notifyTelegram: false,
+    now: '2026-04-04T15:00:00.000Z',
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/getUpdates')) {
+      return fakeJsonResponse({
+        ok: true,
+        result: [{
+          update_id: 2,
+          message: {
+            chat: { id: 123 },
+            from: { id: 123 },
+            text: `/approve ${request.remoteRequestId}`,
+          },
+        }],
+      });
+    }
+    if (String(url).endsWith('/sendMessage')) {
+      return fakeJsonResponse({ ok: true, result: { message_id: 1 } });
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  try {
+    await telegramSync({ cwd: repoRoot });
+    const status = await remoteStatus(request.remoteRequestId, { cwd: repoRoot });
+    assert.equal(status.request.effectiveStatus, 'queued');
+    assert.notEqual(status.request.jobId, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('remoteEnqueue can push approval-needed notifications to Telegram with signed links', async () => {
+  const repoRoot = await createTempRepo();
+  const config = await loadConfig(repoRoot);
+  config.remote.publicBaseUrl = 'https://bridge.example.test';
+  config.remote.telegram.botToken = 'telegram-token';
+  config.remote.telegram.allowedUserIds = ['123'];
+  config.remote.telegram.apiBaseUrl = 'https://telegram.example.test';
+  await saveConfig(repoRoot, config);
+
+  const originalFetch = globalThis.fetch;
+  const sentBodies = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/sendMessage')) {
+      sentBodies.push(JSON.parse(init.body));
+      return fakeJsonResponse({ ok: true, result: { message_id: 1 } });
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  try {
+    const request = await remoteEnqueue('notify telegram bridge user', {
+      cwd: repoRoot,
+      now: new Date().toISOString(),
+    });
+
+    assert.equal(sentBodies.length, 1);
+    assert.match(sentBodies[0].text, new RegExp(request.remoteRequestId));
+    assert.match(sentBodies[0].text, /approve: https:\/\/bridge\.example\.test\/v1\/remote\/action\//);
+    assert.match(sentBodies[0].text, /revoke: https:\/\/bridge\.example\.test\/v1\/remote\/action\//);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function fakeJsonResponse(value) {
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    async json() {
+      return value;
+    },
+  };
+}

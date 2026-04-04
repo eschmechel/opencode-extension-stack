@@ -41,6 +41,13 @@ export function defaultConfig() {
     remote: {
       approvalRequired: true,
       maxStatusRequests: 20,
+      publicBaseUrl: null,
+      approvalTokenTtlSeconds: 3600,
+      telegram: {
+        botToken: null,
+        allowedUserIds: [],
+        apiBaseUrl: 'https://api.telegram.org',
+      },
     },
     memory: defaultMemoryPolicy(),
     retention: {
@@ -177,6 +184,13 @@ export function parseConfig(value) {
     remote: {
       approvalRequired: readBoolean(input.remote?.approvalRequired, defaults.remote.approvalRequired, 'remote.approvalRequired'),
       maxStatusRequests: readInteger(input.remote?.maxStatusRequests, defaults.remote.maxStatusRequests, 'remote.maxStatusRequests', 1),
+      publicBaseUrl: readNullableString(input.remote?.publicBaseUrl, defaults.remote.publicBaseUrl, 'remote.publicBaseUrl'),
+      approvalTokenTtlSeconds: readInteger(input.remote?.approvalTokenTtlSeconds, defaults.remote.approvalTokenTtlSeconds, 'remote.approvalTokenTtlSeconds', 1),
+      telegram: {
+        botToken: readNullableString(input.remote?.telegram?.botToken, defaults.remote.telegram.botToken, 'remote.telegram.botToken'),
+        allowedUserIds: readStringArray(input.remote?.telegram?.allowedUserIds, defaults.remote.telegram.allowedUserIds, 'remote.telegram.allowedUserIds'),
+        apiBaseUrl: readString(input.remote?.telegram?.apiBaseUrl, defaults.remote.telegram.apiBaseUrl, 'remote.telegram.apiBaseUrl'),
+      },
     },
     memory: parseMemoryPolicy(input.memory, defaults.memory, 'memory'),
     retention: {

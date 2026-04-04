@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import {
+  bridgeServe,
   remoteApprove,
+  remoteAuth,
   remoteEnqueue,
   remoteRevoke,
   remoteStatus,
+  telegramSync,
 } from './index.js';
 
 async function main() {
@@ -25,6 +28,9 @@ async function main() {
   switch (command) {
     case 'remote':
       await runRemote(subcommand, args.slice(2));
+      return;
+    case 'telegram':
+      await runTelegram(subcommand, args.slice(2));
       return;
     case 'help':
       printHelp();
@@ -83,6 +89,15 @@ async function runRemote(subcommand, args) {
       }
       return;
     }
+    case 'auth': {
+      const result = await remoteAuth();
+      printHeader('Remote auth');
+      printKeyValue('token', result.apiToken);
+      printKeyValue('auth file', result.authPath);
+      printKeyValue('public base url', result.publicBaseUrl ?? '(not configured)');
+      printKeyValue('approval ttl seconds', result.approvalTokenTtlSeconds);
+      return;
+    }
     case 'enqueue': {
       const parsed = parseEnqueueArgs(args);
       const result = await remoteEnqueue(parsed.prompt, {
@@ -128,8 +143,41 @@ async function runRemote(subcommand, args) {
       }
       return;
     }
+    case 'serve': {
+      const parsed = parseServeArgs(args);
+      const server = await bridgeServe({ host: parsed.host, port: parsed.port });
+      printHeader('Remote bridge server');
+      printKeyValue('base url', server.baseUrl);
+      printKeyValue('token', server.apiToken);
+      printKeyValue('host', server.host);
+      printKeyValue('port', server.port);
+      const shutdown = async () => {
+        await server.close();
+        process.exit(0);
+      };
+      process.once('SIGINT', shutdown);
+      process.once('SIGTERM', shutdown);
+      await new Promise(() => {});
+      return;
+    }
     default:
-      throw new Error('Usage: /remote status [id] | /remote enqueue <prompt> | /remote approve <id> | /remote revoke [id]');
+      throw new Error('Usage: /remote status [id] | /remote auth | /remote enqueue <prompt> | /remote approve <id> | /remote revoke [id] | /remote serve [port] [--host <host>]');
+  }
+}
+
+async function runTelegram(subcommand, args) {
+  switch (subcommand) {
+    case 'sync': {
+      const limit = parseOptionalInt(args[0]);
+      const result = await telegramSync({ limit });
+      printHeader('Telegram sync');
+      printKeyValue('updates processed', result.updatesProcessed);
+      printKeyValue('messages sent', result.messagesSent);
+      printKeyValue('last update id', result.lastUpdateId);
+      return;
+    }
+    default:
+      throw new Error('Usage: telegram sync [limit]');
   }
 }
 
@@ -160,6 +208,31 @@ function parseEnqueueArgs(args) {
   };
 }
 
+function parseServeArgs(args) {
+  let port = 0;
+  let host = '127.0.0.1';
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--host') {
+      host = args[index + 1] ?? host;
+      index += 1;
+      continue;
+    }
+    const parsedPort = parseOptionalInt(value);
+    if (parsedPort !== null) {
+      port = parsedPort;
+    }
+  }
+
+  return { host, port };
+}
+
+function parseOptionalInt(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function stripSlash(value) {
   return value.startsWith('/') ? value.slice(1) : value;
 }
@@ -175,9 +248,12 @@ function printKeyValue(key, value) {
 function printHelp() {
   console.log('Usage:');
   console.log('  pnpm run bridge -- /remote status [id]');
+  console.log('  pnpm run bridge -- /remote auth');
   console.log('  pnpm run bridge -- /remote enqueue <prompt> [--requested-by <source>] [--kind <kind>]');
   console.log('  pnpm run bridge -- /remote approve <id>');
   console.log('  pnpm run bridge -- /remote revoke [id]');
+  console.log('  pnpm run bridge -- /remote serve [port] [--host <host>]');
+  console.log('  pnpm run bridge -- telegram sync [limit]');
 }
 
 main().catch((error) => {

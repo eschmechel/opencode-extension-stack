@@ -27,6 +27,11 @@ test('ensureStateLayout creates the expected repo-local files', async () => {
   assert.deepEqual(config.repos.allowUnattended, ['.']);
   assert.equal(config.remote.approvalRequired, true);
   assert.equal(config.remote.maxStatusRequests, 20);
+  assert.equal(config.remote.publicBaseUrl, null);
+  assert.equal(config.remote.approvalTokenTtlSeconds, 3600);
+  assert.equal(config.remote.telegram.botToken, null);
+  assert.deepEqual(config.remote.telegram.allowedUserIds, []);
+  assert.equal(config.remote.telegram.apiBaseUrl, 'https://api.telegram.org');
   assert.equal(config.memory.compact.topicConsolidationMinActive, 3);
   assert.equal(config.memory.compact.contradictionMinSharedTerms, 2);
   assert.equal(config.memory.repair.maxListedEntries, 20);
@@ -54,6 +59,13 @@ test('loadConfig parses memory policy overrides', async () => {
       remote: {
         approvalRequired: false,
         maxStatusRequests: 7,
+        publicBaseUrl: 'https://bridge.example.test',
+        approvalTokenTtlSeconds: 1800,
+        telegram: {
+          botToken: 'bot-token',
+          allowedUserIds: ['12345'],
+          apiBaseUrl: 'https://telegram.example.test',
+        },
       },
     }, null, 2)}\n`,
     'utf8',
@@ -62,6 +74,11 @@ test('loadConfig parses memory policy overrides', async () => {
   const config = await loadConfig(repoRoot);
   assert.equal(config.remote.approvalRequired, false);
   assert.equal(config.remote.maxStatusRequests, 7);
+  assert.equal(config.remote.publicBaseUrl, 'https://bridge.example.test');
+  assert.equal(config.remote.approvalTokenTtlSeconds, 1800);
+  assert.equal(config.remote.telegram.botToken, 'bot-token');
+  assert.deepEqual(config.remote.telegram.allowedUserIds, ['12345']);
+  assert.equal(config.remote.telegram.apiBaseUrl, 'https://telegram.example.test');
   assert.equal(config.memory.compact.topicConsolidationMinActive, 4);
   assert.equal(config.memory.compact.crossTopicMergeMinSharedTerms, 3);
   assert.equal(config.memory.compact.crossTopicMergeMinSimilarity, 0.9);

@@ -98,9 +98,12 @@ Run pack commands with `pnpm run packs -- ...`.
 Run remote bridge commands with `pnpm run bridge -- ...`.
 
 - `/remote status [id]`
+- `/remote auth`
 - `/remote enqueue <prompt>`
 - `/remote approve <id>`
 - `/remote revoke [id]`
+- `/remote serve [port] [--host <host>]`
+- `telegram sync [limit]`
 
 Examples:
 
@@ -144,8 +147,11 @@ pnpm run packs -- /ultraplan "Design a safe rollout plan"
 pnpm run packs -- /packs execute triage "Workers stopped after the last runtime change" --channel remote
 pnpm run packs -- /packs render review-remote "Review remote branch changes" --context "Snapshot attached" --json
 pnpm run bridge -- /remote enqueue "summarize open failures" --requested-by mobile
+pnpm run bridge -- /remote auth
+pnpm run bridge -- /remote serve 8787
 pnpm run bridge -- /remote approve <remote-id>
 pnpm run bridge -- /remote status
+pnpm run bridge -- telegram sync
 ```
 
 Supported schedule formats in the current slice:
@@ -178,6 +184,9 @@ Remote bridge state currently uses:
 
 - `.opencode/remote/requests.json`
 - `.opencode/remote/events.ndjson`
+- `.opencode/remote/auth.json`
+- `.opencode/remote/telegram.json`
+- `.opencode/remote/packets/`
 
 State is intentionally gitignored so unattended/runtime artifacts stay local to the working repo.
 
@@ -274,7 +283,11 @@ Each run directory can contain:
 - `/remote approve` turns an approved request into a local Kairos queue job
 - `/remote revoke` revokes pending approvals and can cancel a still-queued remote job before it starts
 - `/remote status` polls request state and follows the linked Kairos job once approved
+- `/remote serve` exposes a small local HTTP API with bearer-token auth
+- signed approval/revoke links can be generated for awaiting-approval requests when `remote.publicBaseUrl` is configured
 - prompts beginning with `/review` or `/review-remote` are tagged as remote review handoffs and generate a `review-remote` packet under `.opencode/remote/packets/`
+- `telegram sync` polls Telegram for bridge commands and can relay `/enqueue`, `/status`, `/approve`, and `/revoke`
+- when Telegram is configured, remote enqueue/approve/revoke events can push Telegram messages to allowed users
 
 `config.json` now supports:
 
@@ -300,7 +313,14 @@ Each run directory can contain:
   },
   "remote": {
     "approvalRequired": true,
-    "maxStatusRequests": 20
+    "maxStatusRequests": 20,
+    "publicBaseUrl": "https://bridge.example.test",
+    "approvalTokenTtlSeconds": 3600,
+    "telegram": {
+      "botToken": null,
+      "allowedUserIds": ["123456789"],
+      "apiBaseUrl": "https://api.telegram.org"
+    }
   },
   "memory": {
     "compact": {
