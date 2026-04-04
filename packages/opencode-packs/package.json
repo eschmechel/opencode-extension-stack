@@ -1,6 +1,6 @@
 {
   "name": "@opencode-extension-stack/opencode-packs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "bin": {
     "opencode-packs": "./src/cli.js"

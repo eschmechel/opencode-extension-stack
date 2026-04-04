@@ -1,6 +1,6 @@
 {
   "name": "@opencode-extension-stack/opencode-orchestrator",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "bin": {
     "opencode-orchestrator": "./src/cli.js"

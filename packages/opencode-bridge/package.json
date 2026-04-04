@@ -1,6 +1,6 @@
 {
   "name": "@opencode-extension-stack/opencode-bridge",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "bin": {
     "opencode-bridge": "./src/cli.js"
