@@ -138,6 +138,14 @@ async function runWorker(subcommand, args) {
           console.log(`- ${entry.event} ${entry.at}`);
         }
       }
+      if (worker.stdoutTail) {
+        printHeader('Stdout tail');
+        console.log(worker.stdoutTail);
+      }
+      if (worker.stderrTail) {
+        printHeader('Stderr tail');
+        console.log(worker.stderrTail);
+      }
       return;
     }
     case 'archive': {
@@ -247,6 +255,13 @@ async function runTeam(subcommand, args) {
           if (worker.lastError) {
             console.log(`  last error: ${worker.lastError}`);
           }
+        }
+      }
+      if (team.synthesis.previews.length > 0) {
+        printHeader('Previews');
+        for (const preview of team.synthesis.previews) {
+          console.log(`- ${preview.workerId}`);
+          console.log(preview.output);
         }
       }
       return;

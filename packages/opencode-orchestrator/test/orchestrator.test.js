@@ -340,6 +340,33 @@ test('workerArchive and workerPrune preserve artifacts before pruning', async ()
   assert.equal(await exists(path.join(pruned.lastArchivePath, 'worker.json')), true);
 });
 
+test('workerShow and teamShow expose supervision output previews', async () => {
+  const repoRoot = await createTempRepo();
+  const team = await teamCreate(1, 'preview team', {
+    cwd: repoRoot,
+    now: '2026-04-04T09:00:00.000Z',
+    spawnWorkerProcess: () => ({ pid: 7878 }),
+  });
+
+  const worker = await workerShow(team.workerIds[0], { cwd: repoRoot, now: '2026-04-04T09:00:00.000Z' });
+  await runWorkerLoop({
+    repoRoot,
+    workerId: worker.workerId,
+    workerToken: worker.workerToken,
+    executePrompt: async () => ({
+      exitCode: 0,
+      stdout: 'preview output line',
+      stderr: '',
+    }),
+  });
+
+  const shownWorker = await workerShow(worker.workerId, { cwd: repoRoot, now: '2026-04-04T09:01:00.000Z' });
+  const shownTeam = await teamShow(team.teamId, { cwd: repoRoot, now: '2026-04-04T09:01:00.000Z' });
+
+  assert.match(shownWorker.stdoutTail, /preview output line/);
+  assert.equal(shownTeam.synthesis.previews.length >= 1, true);
+});
+
 test('teamArchive and teamPrune preserve synthesized state and prune terminal workers', async () => {
   const repoRoot = await createTempRepo();
   const team = await teamCreate(1, 'archive team', {

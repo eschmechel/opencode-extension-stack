@@ -124,6 +124,8 @@ export async function workerShow(workerId, options = {}) {
   const workerPaths = getWorkerPaths(repoRoot, workerId);
   const recentControls = await readRecentNdjson(workerPaths.controlPath, options.controlLimit ?? 5);
   const recentEvents = await readRecentNdjson(workerPaths.eventsPath, options.eventLimit ?? 10);
+  const stdoutTail = await readFileTail(workerPaths.currentStdoutPath, options.outputTailBytes ?? 500);
+  const stderrTail = await readFileTail(workerPaths.currentStderrPath, options.outputTailBytes ?? 500);
 
   return {
     ...worker,
@@ -134,6 +136,8 @@ export async function workerShow(workerId, options = {}) {
     statePath: workerPaths.statePath,
     recentControls,
     recentEvents,
+    stdoutTail,
+    stderrTail,
   };
 }
 
