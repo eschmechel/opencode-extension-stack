@@ -1,0 +1,71 @@
+{
+  "budgets": {
+    "perRunUsd": 1,
+    "perDayUsd": 10,
+    "perDayRuns": 25
+  },
+  "repos": {
+    "allowUnattended": [
+      "."
+    ]
+  },
+  "idle": {
+    "dispatchWhenIdle": true,
+    "minIdleSeconds": 300
+  },
+  "retry": {
+    "backoffType": "exponential",
+    "baseDelaySeconds": 30,
+    "maxDelaySeconds": 3600,
+    "maxAttempts": 3
+  },
+  "notifications": {
+    "console": true
+  },
+  "remote": {
+    "approvalRequired": true,
+    "maxStatusRequests": 20,
+    "publicBaseUrl": "https://bridge.example.com",
+    "approvalTokenTtlSeconds": 1800,
+    "telegram": {
+      "botToken": "<telegram-bot-token>",
+      "allowedUserIds": [
+        "123456789"
+      ],
+      "apiBaseUrl": "https://api.telegram.org",
+      "webhookSecret": "<telegram-webhook-secret>"
+    }
+  },
+  "memory": {
+    "compact": {
+      "topicConsolidationMinActive": 3,
+      "topicConsolidationSummaryLimit": 6,
+      "crossTopicMergeMinSharedTerms": 2,
+      "crossTopicMergeMinSimilarity": 0.8,
+      "contradictionMinSharedTerms": 2,
+      "driftMinActiveEntries": 2,
+      "driftMaxPairSimilarity": 0.35
+    },
+    "repair": {
+      "maxListedEntries": 20
+    }
+  },
+  "retention": {
+    "workers": {
+      "autoPruneAfterDays": 7,
+      "compactArchives": true,
+      "maxArchiveEntries": 50,
+      "maxArchiveAgeDays": 30,
+      "maxArchiveBytes": 104857600,
+      "allowDeleteArchived": false
+    },
+    "teams": {
+      "autoPruneAfterDays": 7,
+      "compactArchives": true,
+      "maxArchiveEntries": 50,
+      "maxArchiveAgeDays": 30,
+      "maxArchiveBytes": 104857600,
+      "allowDeleteArchived": false
+    }
+  }
+}

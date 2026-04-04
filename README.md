@@ -15,9 +15,15 @@ This repo started as an empty git repository, so the first pass focuses on a cle
 
 ## Operator Docs
 
+- `docs/quickstart.md`
 - `docs/operator-guide.md`
 - `docs/remote-bridge-telegram-setup.md`
 - `docs/team-template-memory-workflows.md`
+- `docs/release-process.md`
+
+## Sample Config
+
+- `docs/examples/config.example.json`
 
 ## Entrypoints
 
