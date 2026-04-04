@@ -1,0 +1,25 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/opencode-bridge: {}
+
+  packages/opencode-core: {}
+
+  packages/opencode-kairos:
+    dependencies:
+      '@opencode-extension-stack/opencode-core':
+        specifier: workspace:*
+        version: link:../opencode-core
+
+  packages/opencode-memory: {}
+
+  packages/opencode-orchestrator: {}
+
+  packages/opencode-packs: {}

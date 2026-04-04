@@ -1,0 +1,6 @@
+{
+  "name": "@opencode-extension-stack/opencode-bridge",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": "./src/index.js"
+}
