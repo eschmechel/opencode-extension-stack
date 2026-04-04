@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "kairos": "node packages/opencode-kairos/src/cli.js",
+    "orchestrator": "node packages/opencode-orchestrator/src/cli.js",
     "test": "node --test"
   }
 }
