@@ -9,6 +9,7 @@ import { ensureStateLayout, getOpencodePaths, loadConfig, saveConfig } from '../
 import {
   memoryAdd,
   memoryCompact,
+  memoryContradictions,
   memoryMergeApply,
   memoryRepair,
   memoryRebuild,
@@ -331,6 +332,32 @@ test('memoryMergeApply creates one merged entry and marks source notes stale', a
   assert.equal(second.reusedExisting, true);
 });
 
+test('memoryRebuild and memoryContradictions surface opposing memory claims', async () => {
+  const repoRoot = await createTempRepo();
+  await writeRunArtifact(repoRoot, 'run_contradiction_one');
+  await writeRunArtifact(repoRoot, 'run_contradiction_two');
+
+  await memoryAdd('Allow unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    topic: 'Protected Branch Policy',
+    runId: 'run_contradiction_one',
+  });
+  await memoryAdd('Deny unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    topic: 'Protected Branch Policy',
+    runId: 'run_contradiction_two',
+  });
+
+  const rebuilt = await memoryRebuild({ cwd: repoRoot, now: '2026-04-04T14:10:00.000Z' });
+  const contradictions = await memoryContradictions({ cwd: repoRoot });
+
+  assert.equal(rebuilt.contradictionAlerts.length, 1);
+  assert.equal(contradictions.count, 1);
+  assert.equal(contradictions.contradictionAlerts[0].topic, 'protected-branch-policy');
+  assert.equal(contradictions.contradictionAlerts[0].opposingTerms.some((pair) => pair[0] === 'allow' && pair[1] === 'deny'), true);
+  assert.match(rebuilt.markdown, /## Contradiction Alerts/);
+});
+
 test('memoryCompact marks entries stale when run evidence disappears', async () => {
   const repoRoot = await createTempRepo();
   const paths = getOpencodePaths(repoRoot);
@@ -520,6 +547,7 @@ test('memory policy config changes compaction and repair discovery thresholds', 
   const paths = getOpencodePaths(repoRoot);
   const config = await loadConfig(repoRoot);
   config.memory.compact.topicConsolidationMinActive = 4;
+  config.memory.compact.contradictionMinSharedTerms = 6;
   config.memory.repair.maxListedEntries = 1;
   await saveConfig(repoRoot, config);
 
@@ -528,6 +556,8 @@ test('memory policy config changes compaction and repair discovery thresholds', 
   await writeRunArtifact(repoRoot, 'run_threshold_three');
   await writeRunArtifact(repoRoot, 'run_threshold_four');
   await writeRunArtifact(repoRoot, 'run_threshold_five');
+  await writeRunArtifact(repoRoot, 'run_threshold_six');
+  await writeRunArtifact(repoRoot, 'run_threshold_seven');
 
   await memoryAdd('Queue note one.', {
     cwd: repoRoot,
@@ -566,6 +596,18 @@ test('memory policy config changes compaction and repair discovery thresholds', 
     runId: 'run_threshold_five',
     now: '2026-04-04T12:05:00.000Z',
   });
+  await memoryAdd('Allow unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    topic: 'Protected Branch Policy',
+    runId: 'run_threshold_six',
+    now: '2026-04-04T12:06:00.000Z',
+  });
+  await memoryAdd('Deny unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    topic: 'Protected Branch Policy',
+    runId: 'run_threshold_seven',
+    now: '2026-04-04T12:07:00.000Z',
+  });
 
   await fs.rm(path.join(paths.runsDir, 'run_threshold_four', 'result.json'));
   await fs.rm(path.join(paths.runsDir, 'run_threshold_five', 'result.json'));
@@ -576,6 +618,9 @@ test('memory policy config changes compaction and repair discovery thresholds', 
   assert.equal(stale.totalCount, 2);
   assert.equal(stale.count, 1);
   assert.equal(stale.truncated, true);
+
+  const contradictionSuppressed = await memoryRebuild({ cwd: repoRoot, now: '2026-04-04T12:30:00.000Z' });
+  assert.equal(contradictionSuppressed.contradictionAlerts.length, 0);
 });
 
 test('memoryRebuild restores MEMORY.md from topic files', async () => {

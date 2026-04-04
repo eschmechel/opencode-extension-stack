@@ -25,6 +25,7 @@ test('ensureStateLayout creates the expected repo-local files', async () => {
   const config = await loadConfig(repoRoot);
   assert.deepEqual(config.repos.allowUnattended, ['.']);
   assert.equal(config.memory.compact.topicConsolidationMinActive, 3);
+  assert.equal(config.memory.compact.contradictionMinSharedTerms, 2);
   assert.equal(config.memory.repair.maxListedEntries, 20);
 });
 
@@ -40,6 +41,7 @@ test('loadConfig parses memory policy overrides', async () => {
           topicConsolidationMinActive: 4,
           crossTopicMergeMinSharedTerms: 3,
           crossTopicMergeMinSimilarity: 0.9,
+          contradictionMinSharedTerms: 4,
           driftMaxPairSimilarity: 0.2,
         },
         repair: {
@@ -54,6 +56,7 @@ test('loadConfig parses memory policy overrides', async () => {
   assert.equal(config.memory.compact.topicConsolidationMinActive, 4);
   assert.equal(config.memory.compact.crossTopicMergeMinSharedTerms, 3);
   assert.equal(config.memory.compact.crossTopicMergeMinSimilarity, 0.9);
+  assert.equal(config.memory.compact.contradictionMinSharedTerms, 4);
   assert.equal(config.memory.compact.driftMaxPairSimilarity, 0.2);
   assert.equal(config.memory.repair.maxListedEntries, 5);
 });

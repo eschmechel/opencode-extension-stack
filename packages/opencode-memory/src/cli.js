@@ -4,6 +4,7 @@ import {
   getMemoryPaths,
   memoryAdd,
   memoryCompact,
+  memoryContradictions,
   memoryMergeApply,
   memoryRepair,
   memoryRebuild,
@@ -55,12 +56,16 @@ async function runMemory(subcommand, args) {
         printKeyValue('index', result.indexPath);
         printKeyValue('topics', result.topics.length);
         printKeyValue('merge candidates', result.mergeCandidates.length);
+        printKeyValue('contradiction alerts', result.contradictionAlerts.length);
         printKeyValue('drift alerts', result.driftAlerts.length);
         for (const topicSummary of result.topics) {
           console.log(`- ${topicSummary.topic} active=${topicSummary.activeCount} stale=${topicSummary.staleCount} updated=${topicSummary.updatedAt}`);
         }
         for (const candidate of result.mergeCandidates) {
           console.log(`- merge candidate: ${candidate.topics.join(' <-> ')} shared=${candidate.sharedTerms.join(', ')} similarity=${candidate.similarity.toFixed(2)}`);
+        }
+        for (const alert of result.contradictionAlerts) {
+          console.log(`- contradiction: ${alert.topic} terms=${alert.opposingTerms.map((pair) => pair.join('/')).join(', ')}`);
         }
         for (const alert of result.driftAlerts) {
           console.log(`- drift alert: ${alert.topic} active=${alert.activeCount} maxSimilarity=${alert.maxPairSimilarity.toFixed(2)}`);
@@ -153,6 +158,17 @@ async function runMemory(subcommand, args) {
       }
       return;
     }
+    case 'contradictions': {
+      const result = await memoryContradictions(teamOptions);
+      printHeader(result.namespace === 'team' ? `Memory contradictions team/${result.teamId}` : 'Memory contradictions');
+      printKeyValue('alerts', result.count);
+      for (const alert of result.contradictionAlerts) {
+        console.log(`- ${alert.topic} ${alert.leftMemoryId} <-> ${alert.rightMemoryId}`);
+        console.log(`  opposing terms: ${alert.opposingTerms.map((pair) => pair.join('/')).join(', ')}`);
+        console.log(`  shared terms: ${alert.sharedTerms.join(', ')}`);
+      }
+      return;
+    }
     case 'add': {
       const parsed = parseAddArgs(parsedCommon.args);
       const result = await memoryAdd(parsed.note, {
@@ -233,6 +249,7 @@ async function runMemory(subcommand, args) {
       printKeyValue('index', result.indexPath);
       printKeyValue('topics', result.topics.length);
       printKeyValue('merge candidates', result.mergeCandidates.length);
+      printKeyValue('contradiction alerts', result.contradictionAlerts.length);
       printKeyValue('drift alerts', result.driftAlerts.length);
       return;
     }
@@ -246,12 +263,13 @@ async function runMemory(subcommand, args) {
       printKeyValue('consolidated created', result.consolidatedCreated);
       printKeyValue('entries consolidated', result.entriesConsolidated);
       printKeyValue('merge candidates', result.mergeCandidates.length);
+      printKeyValue('contradiction alerts', result.contradictionAlerts.length);
       printKeyValue('drift alerts', result.driftAlerts.length);
       printKeyValue('index', result.indexPath);
       return;
     }
     default:
-      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--stale] [--repairable] [--team <teamId>] | /memory stale [--repairable] [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>] | /memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
+      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--stale] [--repairable] [--team <teamId>] | /memory stale [--repairable] [--team <teamId>] | /memory contradictions [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>] | /memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
   }
 }
 
@@ -471,6 +489,7 @@ function printHelp() {
   console.log('  pnpm run memory -- /memory show [topic] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory search <query> [--stale] [--repairable] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory stale [--repairable] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory contradictions [--team <teamId>]');
   console.log('  pnpm run memory -- /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>]');

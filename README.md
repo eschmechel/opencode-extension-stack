@@ -63,8 +63,10 @@ Run memory commands with `pnpm run memory -- ...`.
 - `/memory show [topic] [--team <teamId>]`
 - `/memory search <query> [--stale] [--repairable] [--team <teamId>]`
 - `/memory stale [--repairable] [--team <teamId>]`
+- `/memory contradictions [--team <teamId>]`
 - `/memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>]`
 - `/memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>]`
+- `/memory merge <topicA> <topicB> [--target <topic>] [--force] [--team <teamId>]`
 - `/memory rebuild [--team <teamId>]`
 - `/memory compact [--team <teamId>]`
 
@@ -94,6 +96,8 @@ pnpm run memory -- /memory add "Queue retries are delayed by retryAt" --topic "q
 pnpm run memory -- /memory add "Worker branch found a safe migration path" --topic migrations --worker <worker-id>
 pnpm run memory -- /memory add "Team synthesis says option B is safer" --topic rollout --team-result <team-id>
 pnpm run memory -- /memory stale --repairable
+pnpm run memory -- /memory contradictions
+pnpm run memory -- /memory merge "queue retry policy" "retry queue policy" --target "queue retry policy"
 pnpm run memory -- /memory show
 pnpm run memory -- /memory search retryAt
 pnpm run memory -- /memory add "Release team keeps worker notes separate" --team release-team --topic workers --run <run-id>
@@ -183,11 +187,14 @@ Each run directory can contain:
 - `/memory repair` creates a fresh entry for a stale note, links the old entry to the replacement, and rebinds evidence without deleting audit history
 - `/memory stale --repairable` lists only stale entries that can be rebound to fresh evidence
 - `/memory search ... --stale --repairable` narrows search to repairable stale notes
+- `/memory contradictions` surfaces likely opposing claims inside the same topic using skeptical heuristics
 - all memory commands default to repo-wide memory and can target a team namespace with `--team <teamId>`
 - `/memory compact` refreshes stale markers when backing run artifacts disappear or stop being valid
 - duplicate memory entries are compacted by marking older duplicates stale instead of deleting them
 - topics with several active notes are consolidated into a single evidence-backed summary entry and the superseded notes are marked stale with an audit link
 - `MEMORY.md` now includes heuristic merge candidates across topics and drift alerts for low-overlap active notes
+- `/memory merge` lets you explicitly apply an advisory cross-topic merge and keeps audit links back to the source notes
+- `MEMORY.md` now also includes contradiction alerts for opposing active claims in the same topic
 - cross-topic heuristics are advisory only; they surface candidates without silently merging topic files
 
 `config.json` now supports:
@@ -218,6 +225,7 @@ Each run directory can contain:
       "topicConsolidationSummaryLimit": 6,
       "crossTopicMergeMinSharedTerms": 2,
       "crossTopicMergeMinSimilarity": 0.8,
+      "contradictionMinSharedTerms": 2,
       "driftMinActiveEntries": 2,
       "driftMaxPairSimilarity": 0.35
     },

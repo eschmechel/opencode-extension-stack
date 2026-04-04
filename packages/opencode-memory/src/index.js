@@ -18,6 +18,20 @@ const TEXT_STOPWORDS = new Set([
   'before', 'there', 'their', 'them', 'they', 'your', 'ours', 'have', 'has', 'had', 'were', 'was', 'are',
   'is', 'not', 'but', 'too', 'can', 'via', 'per', 'all', 'any', 'its', 'out', 'off', 'one', 'two', 'three',
 ]);
+const CONTRADICTION_TOKEN_PAIRS = [
+  ['allow', 'deny'],
+  ['allowed', 'denied'],
+  ['enable', 'disable'],
+  ['enabled', 'disabled'],
+  ['start', 'stop'],
+  ['started', 'stopped'],
+  ['safe', 'unsafe'],
+  ['before', 'after'],
+  ['required', 'optional'],
+  ['success', 'failure'],
+  ['successful', 'failed'],
+  ['increase', 'decrease'],
+];
 
 export async function getMemoryPaths(options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
@@ -69,6 +83,7 @@ export async function memoryShow(topic, options = {}) {
     markdown: indexView.markdown,
     topics: indexView.topics,
     mergeCandidates: indexView.mergeCandidates,
+    contradictionAlerts: indexView.contradictionAlerts,
     driftAlerts: indexView.driftAlerts,
     policy: indexView.policy,
   };
@@ -191,6 +206,23 @@ export async function memoryStale(options = {}) {
     truncated: totalCount > limitedEntries.length,
     repairableOnly: Boolean(options.repairableOnly),
     entries: limitedEntries,
+  };
+}
+
+export async function memoryContradictions(options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  const policy = await loadMemoryPolicy(repoRoot);
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
+  const contradictionAlerts = buildContradictionAlerts(topicFiles, policy.compact);
+
+  return {
+    repoRoot,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
+    count: contradictionAlerts.length,
+    contradictionAlerts,
   };
 }
 
@@ -532,6 +564,7 @@ export async function memoryCompact(options = {}) {
       consolidatedCreated,
       entriesConsolidated,
       mergeCandidates: rebuilt.mergeCandidates,
+      contradictionAlerts: rebuilt.contradictionAlerts,
       driftAlerts: rebuilt.driftAlerts,
       policy: rebuilt.policy,
     };
@@ -540,7 +573,7 @@ export async function memoryCompact(options = {}) {
 
 async function rebuildIndexLocked(repoRoot, namespacePaths, nowIso) {
   const indexView = await buildIndexView(repoRoot, namespacePaths, nowIso);
-  const { topics, markdown, mergeCandidates, driftAlerts, policy } = indexView;
+  const { topics, markdown, mergeCandidates, contradictionAlerts, driftAlerts, policy } = indexView;
   await writeFileAtomic(namespacePaths.indexPath, markdown);
   return {
     repoRoot,
@@ -551,6 +584,7 @@ async function rebuildIndexLocked(repoRoot, namespacePaths, nowIso) {
     topics,
     markdown,
     mergeCandidates,
+    contradictionAlerts,
     driftAlerts,
     policy,
   };
@@ -563,8 +597,9 @@ async function buildIndexView(repoRoot, namespacePaths, nowIso) {
     .map((topicFile) => buildTopicSummary(namespacePaths, topicFile))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const mergeCandidates = buildCrossTopicMergeCandidates(topicFiles, policy.compact);
+  const contradictionAlerts = buildContradictionAlerts(topicFiles, policy.compact);
   const driftAlerts = buildTopicDriftAlerts(topicFiles, policy.compact);
-  const markdown = buildIndexMarkdown(namespacePaths, topics, mergeCandidates, driftAlerts, nowIso);
+  const markdown = buildIndexMarkdown(namespacePaths, topics, mergeCandidates, contradictionAlerts, driftAlerts, nowIso);
 
   return {
     repoRoot,
@@ -573,6 +608,7 @@ async function buildIndexView(repoRoot, namespacePaths, nowIso) {
     indexPath: namespacePaths.indexPath,
     topics,
     mergeCandidates,
+    contradictionAlerts,
     driftAlerts,
     markdown,
     policy,
@@ -991,7 +1027,7 @@ async function resolveEvidenceFromOptions(repoRoot, options, capturedAt, actionN
   return resolveTeamEvidence(repoRoot, teamResultId, capturedAt);
 }
 
-function buildIndexMarkdown(namespacePaths, topics, mergeCandidates, driftAlerts, nowIso) {
+function buildIndexMarkdown(namespacePaths, topics, mergeCandidates, contradictionAlerts, driftAlerts, nowIso) {
   const lines = [
     '# MEMORY',
     '',
@@ -1029,6 +1065,16 @@ function buildIndexMarkdown(namespacePaths, topics, mergeCandidates, driftAlerts
       lines.push(`- \`${candidate.topics.join('` <-> `')}\``);
       lines.push(`  shared terms: ${candidate.sharedTerms.join(', ')}`);
       lines.push(`  similarity: ${candidate.similarity.toFixed(2)}`);
+    }
+    lines.push('');
+  }
+
+  if (contradictionAlerts.length > 0) {
+    lines.push('## Contradiction Alerts', '');
+    for (const alert of contradictionAlerts) {
+      lines.push(`- \`${alert.topic}\` contradicts on ${alert.opposingTerms.map((pair) => pair.join('/')).join(', ')}`);
+      lines.push(`  shared terms: ${alert.sharedTerms.join(', ')}`);
+      lines.push(`  summaries: ${limitText(alert.leftSummary, 100)} | ${limitText(alert.rightSummary, 100)}`);
     }
     lines.push('');
   }
@@ -1077,6 +1123,43 @@ function buildCrossTopicMergeCandidates(topicFiles, compactPolicy) {
   }
 
   return candidates.sort((left, right) => right.similarity - left.similarity || left.topics.join(':').localeCompare(right.topics.join(':')));
+}
+
+function buildContradictionAlerts(topicFiles, compactPolicy) {
+  const alerts = [];
+
+  for (const topicFile of topicFiles) {
+    const activeNotes = topicFile.entries.filter((entry) => !entry.stale && !['consolidated', 'merged'].includes(entry.entryType));
+    for (let index = 0; index < activeNotes.length; index += 1) {
+      for (let compareIndex = index + 1; compareIndex < activeNotes.length; compareIndex += 1) {
+        const left = activeNotes[index];
+        const right = activeNotes[compareIndex];
+        const leftTerms = tokenizeSignalText(left.summary);
+        const rightTerms = tokenizeSignalText(right.summary);
+        const sharedTerms = intersectSortedTerms(leftTerms, rightTerms);
+        if (sharedTerms.length < compactPolicy.contradictionMinSharedTerms) {
+          continue;
+        }
+
+        const opposingTerms = findOpposingTerms(leftTerms, rightTerms);
+        if (opposingTerms.length === 0) {
+          continue;
+        }
+
+        alerts.push({
+          topic: topicFile.topic,
+          leftMemoryId: left.memoryId,
+          rightMemoryId: right.memoryId,
+          sharedTerms,
+          opposingTerms,
+          leftSummary: left.summary,
+          rightSummary: right.summary,
+        });
+      }
+    }
+  }
+
+  return alerts.sort((left, right) => right.sharedTerms.length - left.sharedTerms.length || left.topic.localeCompare(right.topic));
 }
 
 function buildTopicDriftAlerts(topicFiles, compactPolicy) {
@@ -1192,6 +1275,20 @@ function jaccardSimilarity(left, right) {
   const shared = intersectSortedTerms(left, right).length;
   const union = new Set([...left, ...right]).size;
   return union === 0 ? 0 : shared / union;
+}
+
+function findOpposingTerms(leftTerms, rightTerms) {
+  const leftSet = new Set(leftTerms);
+  const rightSet = new Set(rightTerms);
+  const matches = [];
+
+  for (const [leftToken, rightToken] of CONTRADICTION_TOKEN_PAIRS) {
+    if ((leftSet.has(leftToken) && rightSet.has(rightToken)) || (leftSet.has(rightToken) && rightSet.has(leftToken))) {
+      matches.push([leftToken, rightToken]);
+    }
+  }
+
+  return matches;
 }
 
 async function loadMemoryPolicy(repoRoot) {
