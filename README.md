@@ -10,7 +10,7 @@ This repo started as an empty git repository, so the first pass focuses on a cle
 - `packages/opencode-kairos`: unattended queue and minimal scheduler slice
 - `packages/opencode-orchestrator`: placeholder for detached worker lifecycle
 - `packages/opencode-memory`: evidence-backed skeptical memory storage, search, and compaction
-- `packages/opencode-packs`: placeholder for reusable command packs
+- `packages/opencode-packs`: reusable command pack registry, renderer, and contract validator
 - `packages/opencode-bridge`: placeholder for remote control plane work
 
 ## Current Commands
@@ -70,6 +70,17 @@ Run memory commands with `pnpm run memory -- ...`.
 - `/memory rebuild [--team <teamId>]`
 - `/memory compact [--team <teamId>]`
 
+Run pack commands with `pnpm run packs -- ...`.
+
+- `/packs list`
+- `/packs show <pack>`
+- `/packs contract <pack>`
+- `/packs render <pack> <request> [--context <text>] [--constraint <text>] [--json]`
+- `/packs validate <pack> <json>`
+- `/ultraplan <request>`
+- `/review <request>`
+- `/review-remote <request>`
+
 Examples:
 
 ```bash
@@ -101,6 +112,10 @@ pnpm run memory -- /memory merge "queue retry policy" "retry queue policy" --tar
 pnpm run memory -- /memory show
 pnpm run memory -- /memory search retryAt
 pnpm run memory -- /memory add "Release team keeps worker notes separate" --team release-team --topic workers --run <run-id>
+pnpm run packs -- /packs list
+pnpm run packs -- /packs show review
+pnpm run packs -- /ultraplan "Design a safe rollout plan"
+pnpm run packs -- /packs render review-remote "Review remote branch changes" --context "Snapshot attached" --json
 ```
 
 Supported schedule formats in the current slice:
@@ -196,6 +211,15 @@ Each run directory can contain:
 - `/memory merge` lets you explicitly apply an advisory cross-topic merge and keeps audit links back to the source notes
 - `MEMORY.md` now also includes contradiction alerts for opposing active claims in the same topic
 - cross-topic heuristics are advisory only; they surface candidates without silently merging topic files
+
+## Pack Behavior
+
+- packs are reusable prompt definitions with explicit agent presets and model defaults
+- each pack exposes a structured JSON output contract for automation-friendly validation
+- `/ultraplan` renders a planning pack focused on assumptions, steps, and validation
+- `/review` renders a findings-first review pack aligned with the repo review style
+- `/review-remote` renders an async approval/handoff review packet for remote workflows
+- `/packs validate` checks a JSON output payload against the selected pack contract
 
 `config.json` now supports:
 

@@ -11,6 +11,7 @@
     "kairos": "node packages/opencode-kairos/src/cli.js",
     "memory": "node packages/opencode-memory/src/cli.js",
     "orchestrator": "node packages/opencode-orchestrator/src/cli.js",
+    "packs": "node packages/opencode-packs/src/cli.js",
     "test": "node --test"
   }
 }
