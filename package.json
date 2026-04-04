@@ -13,6 +13,12 @@
     "memory": "node packages/opencode-memory/src/cli.js",
     "orchestrator": "node packages/opencode-orchestrator/src/cli.js",
     "packs": "node packages/opencode-packs/src/cli.js",
+    "smoke": "pnpm run smoke:kairos && pnpm run smoke:memory && pnpm run smoke:orchestrator && pnpm run smoke:packs && pnpm run smoke:bridge",
+    "smoke:bridge": "node packages/opencode-bridge/src/cli.js help",
+    "smoke:kairos": "node packages/opencode-kairos/src/cli.js help",
+    "smoke:memory": "node packages/opencode-memory/src/cli.js help",
+    "smoke:orchestrator": "node packages/opencode-orchestrator/src/cli.js help",
+    "smoke:packs": "node packages/opencode-packs/src/cli.js help",
     "test": "node --test"
   }
 }

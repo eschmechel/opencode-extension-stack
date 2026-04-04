@@ -13,6 +13,22 @@ This repo started as an empty git repository, so the first pass focuses on a cle
 - `packages/opencode-packs`: reusable command pack registry, renderer, and contract validator
 - `packages/opencode-bridge`: remote enqueue, approval flow, and local control-plane state
 
+## Operator Docs
+
+- `docs/operator-guide.md`
+- `docs/remote-bridge-telegram-setup.md`
+- `docs/team-template-memory-workflows.md`
+
+## Entrypoints
+
+Each package exposes a local bin and a root `pnpm run ...` shortcut:
+
+- `pnpm run kairos -- ...` or `opencode-kairos`
+- `pnpm run memory -- ...` or `opencode-memory`
+- `pnpm run orchestrator -- ...` or `opencode-orchestrator`
+- `pnpm run packs -- ...` or `opencode-packs`
+- `pnpm run bridge -- ...` or `opencode-bridge`
+
 ## Current Commands
 
 Run commands with `pnpm run kairos -- ...`.

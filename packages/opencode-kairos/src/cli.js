@@ -692,27 +692,27 @@ function stripSlash(value) {
 function printHelp() {
   console.log('OpenCode Kairos');
   console.log('');
-  console.log('Commands:');
-  console.log('  /queue add <prompt>');
-  console.log('  /queue list');
-  console.log('  /queue cancel <id>');
-  console.log('  /jobs');
-  console.log('  /jobs show <id>');
-  console.log('  /jobs retry <id>');
-  console.log('  /cron add <schedule> <prompt>');
-  console.log('  /cron list');
-  console.log('  /cron remove <id>');
-  console.log('  /cron tick');
-  console.log('  activity ping [source]');
-  console.log('  activity show');
-  console.log('  notifications list [limit]');
-  console.log('  runner once [--force]');
-  console.log('  supervisor once [--force]');
-  console.log('  supervisor loop [cycles] [intervalMs] [--force]');
-  console.log('  daemon start [intervalMs] [--force]');
-  console.log('  daemon run [intervalMs] [--force]');
-  console.log('  daemon stop');
-  console.log('  daemon status');
+  console.log('Usage:');
+  console.log('  pnpm run kairos -- /queue add <prompt>');
+  console.log('  pnpm run kairos -- /queue list');
+  console.log('  pnpm run kairos -- /queue cancel <id>');
+  console.log('  pnpm run kairos -- /jobs');
+  console.log('  pnpm run kairos -- /jobs show <id>');
+  console.log('  pnpm run kairos -- /jobs retry <id>');
+  console.log('  pnpm run kairos -- /cron add <schedule> <prompt>');
+  console.log('  pnpm run kairos -- /cron list');
+  console.log('  pnpm run kairos -- /cron remove <id>');
+  console.log('  pnpm run kairos -- /cron tick');
+  console.log('  pnpm run kairos -- activity ping [source]');
+  console.log('  pnpm run kairos -- activity show');
+  console.log('  pnpm run kairos -- notifications list [limit]');
+  console.log('  pnpm run kairos -- runner once [--force]');
+  console.log('  pnpm run kairos -- supervisor once [--force]');
+  console.log('  pnpm run kairos -- supervisor loop [cycles] [intervalMs] [--force]');
+  console.log('  pnpm run kairos -- daemon start [intervalMs] [--force]');
+  console.log('  pnpm run kairos -- daemon run [intervalMs] [--force]');
+  console.log('  pnpm run kairos -- daemon stop');
+  console.log('  pnpm run kairos -- daemon status');
 }
 
 main().catch((error) => {
