@@ -7,6 +7,7 @@ import {
   memoryRepair,
   memoryRebuild,
   memorySearch,
+  memoryStale,
   memoryShow,
 } from './index.js';
 
@@ -86,18 +87,48 @@ async function runMemory(subcommand, args) {
           if (evidence.kind === 'worker' && evidence.workerId) {
             console.log(`  evidence worker: ${evidence.workerId}`);
           }
+          if (evidence.kind === 'team' && evidence.teamId) {
+            console.log(`  evidence team result: ${evidence.teamId}`);
+          }
         }
       }
       return;
     }
     case 'search': {
-      const query = parsedCommon.args.join(' ').trim();
-      const result = await memorySearch(query, teamOptions);
+      const parsed = parseSearchArgs(parsedCommon.args);
+      const result = await memorySearch(parsed.query, {
+        ...teamOptions,
+        staleOnly: parsed.staleOnly,
+        repairableOnly: parsed.repairableOnly,
+      });
       printHeader(result.namespace === 'team' ? `Memory search team/${result.teamId}: ${result.query}` : `Memory search: ${result.query}`);
       printKeyValue('matches', result.count);
+      if (parsed.staleOnly) {
+        printKeyValue('stale only', 'yes');
+      }
+      if (parsed.repairableOnly) {
+        printKeyValue('repairable only', 'yes');
+      }
       for (const match of result.matches) {
         console.log(`- ${match.topic} ${match.memoryId}${match.stale ? ` [stale:${match.staleReason}]` : ''}`);
         console.log(`  ${match.summary}`);
+      }
+      return;
+    }
+    case 'stale': {
+      const parsed = parseStaleArgs(parsedCommon.args);
+      const result = await memoryStale({
+        ...teamOptions,
+        repairableOnly: parsed.repairableOnly,
+      });
+      printHeader(result.namespace === 'team' ? `Stale memory team/${result.teamId}` : 'Stale memory');
+      printKeyValue('entries', result.count);
+      if (parsed.repairableOnly) {
+        printKeyValue('repairable only', 'yes');
+      }
+      for (const entry of result.entries) {
+        console.log(`- ${entry.topic} ${entry.memoryId} [stale:${entry.staleReason}]${entry.repairable ? ' [repairable]' : ''}`);
+        console.log(`  ${entry.summary}`);
       }
       return;
     }
@@ -107,6 +138,7 @@ async function runMemory(subcommand, args) {
         topic: parsed.topic,
         runId: parsed.runId,
         workerId: parsed.workerId,
+        teamResultId: parsed.teamResultId,
         teamId: parsed.teamId ?? parsedCommon.teamId,
       });
       printHeader(`Added ${result.entry.memoryId}`);
@@ -122,6 +154,9 @@ async function runMemory(subcommand, args) {
       if (parsed.workerId) {
         printKeyValue('worker', parsed.workerId);
       }
+      if (parsed.teamResultId) {
+        printKeyValue('team result', parsed.teamResultId);
+      }
       printKeyValue('summary', result.entry.summary);
       return;
     }
@@ -130,6 +165,7 @@ async function runMemory(subcommand, args) {
       const result = await memoryRepair(parsed.memoryId, {
         runId: parsed.runId,
         workerId: parsed.workerId,
+        teamResultId: parsed.teamResultId,
         summary: parsed.summary,
         teamId: parsed.teamId ?? parsedCommon.teamId,
       });
@@ -146,6 +182,9 @@ async function runMemory(subcommand, args) {
       }
       if (parsed.workerId) {
         printKeyValue('worker', parsed.workerId);
+      }
+      if (parsed.teamResultId) {
+        printKeyValue('team result', parsed.teamResultId);
       }
       printKeyValue('summary', result.repaired.summary);
       return;
@@ -170,7 +209,7 @@ async function runMemory(subcommand, args) {
       return;
     }
     default:
-      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId>) [--summary <text>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
+      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--stale] [--repairable] [--team <teamId>] | /memory stale [--repairable] [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
   }
 }
 
@@ -194,6 +233,7 @@ function parseAddArgs(args) {
   let topic = 'general';
   let runId = '';
   let workerId = '';
+  let teamResultId = '';
   let teamId = null;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -213,6 +253,11 @@ function parseAddArgs(args) {
       index += 1;
       continue;
     }
+    if (value === '--team-result') {
+      teamResultId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
     if (value === '--team') {
       teamId = args[index + 1] ?? '';
       index += 1;
@@ -226,6 +271,7 @@ function parseAddArgs(args) {
     topic,
     runId,
     workerId,
+    teamResultId,
     teamId,
   };
 }
@@ -235,6 +281,7 @@ function parseRepairArgs(args) {
   const summaryParts = [];
   let runId = '';
   let workerId = '';
+  let teamResultId = '';
   let teamId = null;
 
   for (let index = 1; index < args.length; index += 1) {
@@ -246,6 +293,11 @@ function parseRepairArgs(args) {
     }
     if (value === '--worker') {
       workerId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--team-result') {
+      teamResultId = args[index + 1] ?? '';
       index += 1;
       continue;
     }
@@ -269,8 +321,41 @@ function parseRepairArgs(args) {
     memoryId,
     runId,
     workerId,
+    teamResultId,
     teamId,
     summary: summaryParts.join(' ').trim(),
+  };
+}
+
+function parseSearchArgs(args) {
+  const queryParts = [];
+  let staleOnly = false;
+  let repairableOnly = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--stale') {
+      staleOnly = true;
+      continue;
+    }
+    if (value === '--repairable') {
+      repairableOnly = true;
+      staleOnly = true;
+      continue;
+    }
+    queryParts.push(value);
+  }
+
+  return {
+    query: queryParts.join(' ').trim(),
+    staleOnly,
+    repairableOnly,
+  };
+}
+
+function parseStaleArgs(args) {
+  return {
+    repairableOnly: args.includes('--repairable'),
   };
 }
 
@@ -309,9 +394,10 @@ function printKeyValue(key, value) {
 function printHelp() {
   console.log('Usage:');
   console.log('  pnpm run memory -- /memory show [topic] [--team <teamId>]');
-  console.log('  pnpm run memory -- /memory search <query> [--team <teamId>]');
-  console.log('  pnpm run memory -- /memory add <note> (--run <runId> | --worker <workerId>) [--topic <topic>] [--team <teamId>]');
-  console.log('  pnpm run memory -- /memory repair <memoryId> (--run <runId> | --worker <workerId>) [--summary <text>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory search <query> [--stale] [--repairable] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory stale [--repairable] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory add <note> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--topic <topic>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory repair <memoryId> (--run <runId> | --worker <workerId> | --team-result <teamId>) [--summary <text>] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory rebuild [--team <teamId>]');
   console.log('  pnpm run memory -- /memory compact [--team <teamId>]');
   console.log('  pnpm run memory -- paths [--team <teamId>]');

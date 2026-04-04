@@ -12,6 +12,7 @@ import {
   memoryRepair,
   memoryRebuild,
   memorySearch,
+  memoryStale,
   memoryShow,
 } from '../src/index.js';
 
@@ -45,6 +46,7 @@ async function writeRunArtifact(repoRoot, runId, options = {}) {
 async function writeWorkerArtifact(repoRoot, workerId, options = {}) {
   const paths = getOpencodePaths(repoRoot);
   const workerDir = path.join(paths.workersDir, workerId);
+  const nowIso = new Date().toISOString();
   await fs.mkdir(workerDir, { recursive: true });
   await fs.writeFile(path.join(workerDir, 'current.stdout.txt'), options.stdout ?? 'worker output', 'utf8');
   await fs.writeFile(path.join(workerDir, 'current.stderr.txt'), options.stderr ?? '', 'utf8');
@@ -55,11 +57,11 @@ async function writeWorkerArtifact(repoRoot, workerId, options = {}) {
       workerToken: `${workerId}-token`,
       status: options.status ?? 'idle',
       createdAt: options.createdAt ?? '2026-04-04T12:00:00.000Z',
-      updatedAt: options.updatedAt ?? '2026-04-04T12:10:00.000Z',
+      updatedAt: options.updatedAt ?? nowIso,
       repoRoot,
       teamId: options.teamId ?? null,
-      pid: null,
-      heartbeatAt: options.heartbeatAt ?? '2026-04-04T12:10:00.000Z',
+      pid: options.pid ?? process.pid,
+      heartbeatAt: options.heartbeatAt ?? nowIso,
       startedAt: options.startedAt ?? '2026-04-04T12:01:00.000Z',
       stoppedAt: options.stoppedAt ?? null,
       lastPrompt: options.lastPrompt ?? 'worker prompt',
@@ -77,6 +79,29 @@ async function writeWorkerArtifact(repoRoot, workerId, options = {}) {
       lastArchivePath: null,
       prunedAt: null,
       model: null,
+    }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+async function writeTeamArtifact(repoRoot, teamId, options = {}) {
+  const paths = getOpencodePaths(repoRoot);
+  await fs.writeFile(
+    path.join(paths.teamsDir, `${teamId}.json`),
+    `${JSON.stringify({
+      teamId,
+      name: options.name ?? null,
+      prompt: options.prompt ?? 'team prompt',
+      requestedCount: options.requestedCount ?? options.workerIds.length,
+      maxConcurrentWorkers: options.maxConcurrentWorkers ?? options.workerIds.length,
+      maxTotalRuns: options.maxTotalRuns ?? null,
+      workerIds: options.workerIds,
+      status: options.status ?? 'active',
+      createdAt: options.createdAt ?? '2026-04-04T12:00:00.000Z',
+      updatedAt: options.updatedAt ?? '2026-04-04T12:10:00.000Z',
+      archiveCount: 0,
+      lastArchivePath: null,
+      prunedAt: null,
     }, null, 2)}\n`,
     'utf8',
   );
@@ -199,6 +224,32 @@ test('memoryAdd accepts successful worker evidence', async () => {
   const search = await memorySearch('worker_ok', { cwd: repoRoot });
   assert.equal(search.count, 1);
   assert.equal(search.matches[0].topic, 'workers');
+});
+
+test('memoryAdd accepts successful team synthesis evidence', async () => {
+  const repoRoot = await createTempRepo();
+  await writeWorkerArtifact(repoRoot, 'worker_team_ok', {
+    status: 'idle',
+    lastExitCode: 0,
+    runCount: 1,
+    stdout: 'team branch result',
+  });
+  await writeTeamArtifact(repoRoot, 'team_ok', {
+    workerIds: ['worker_team_ok'],
+  });
+
+  const added = await memoryAdd('Team synthesis captured a useful merged conclusion.', {
+    cwd: repoRoot,
+    topic: 'Teams',
+    teamResultId: 'team_ok',
+  });
+
+  assert.equal(added.entry.evidence[0].kind, 'team');
+  assert.equal(added.entry.evidence[0].teamId, 'team_ok');
+
+  const search = await memorySearch('team_ok', { cwd: repoRoot });
+  assert.equal(search.count, 1);
+  assert.equal(search.matches[0].topic, 'teams');
 });
 
 test('memoryCompact marks entries stale when run evidence disappears', async () => {
@@ -340,6 +391,49 @@ test('memoryRepair replaces stale evidence with new worker evidence', async () =
   assert.equal(original.replacedByMemoryId, replacement.memoryId);
   assert.equal(replacement.stale, false);
   assert.equal(replacement.summary, 'Repair now points at successful detached worker evidence.');
+});
+
+test('memory search and stale views can filter to repairable stale entries', async () => {
+  const repoRoot = await createTempRepo();
+  const paths = getOpencodePaths(repoRoot);
+  await writeRunArtifact(repoRoot, 'run_dup');
+  await writeRunArtifact(repoRoot, 'run_repairable');
+
+  await memoryAdd('Queue retry guidance duplicate.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_dup',
+    now: '2026-04-04T12:01:00.000Z',
+  });
+  await memoryAdd('Queue retry guidance duplicate.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_dup',
+    now: '2026-04-04T12:02:00.000Z',
+  });
+  const repairable = await memoryAdd('Queue repair target entry.', {
+    cwd: repoRoot,
+    topic: 'Queue',
+    runId: 'run_repairable',
+    now: '2026-04-04T12:03:00.000Z',
+  });
+
+  await fs.rm(path.join(paths.runsDir, 'run_repairable', 'result.json'));
+  await memoryCompact({ cwd: repoRoot, now: '2026-04-04T12:10:00.000Z' });
+
+  const staleOnly = await memoryStale({ cwd: repoRoot, repairableOnly: true });
+  assert.equal(staleOnly.count, 1);
+  assert.equal(staleOnly.entries[0].memoryId, repairable.entry.memoryId);
+  assert.equal(staleOnly.entries[0].repairable, true);
+
+  const search = await memorySearch('queue', {
+    cwd: repoRoot,
+    staleOnly: true,
+    repairableOnly: true,
+  });
+  assert.equal(search.count, 1);
+  assert.equal(search.matches[0].memoryId, repairable.entry.memoryId);
+  assert.equal(search.matches[0].staleReason, 'missing_run_result');
 });
 
 test('memoryRebuild restores MEMORY.md from topic files', async () => {

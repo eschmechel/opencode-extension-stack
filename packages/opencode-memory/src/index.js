@@ -8,6 +8,7 @@ import {
   getOpencodePaths,
   withRepoLock,
 } from '../../opencode-core/src/index.js';
+import { teamShow } from '../../opencode-orchestrator/src/index.js';
 
 const MEMORY_TOPIC_VERSION = 1;
 const TOPIC_CONSOLIDATION_MIN_ACTIVE = 3;
@@ -84,10 +85,17 @@ export async function memorySearch(query, options = {}) {
       const haystack = normalizeSearchText([
         topicFile.topic,
         entry.summary,
-        ...entry.evidence.map((evidence) => evidence.runId ?? evidence.workerId ?? ''),
+        ...entry.evidence.map((evidence) => evidence.runId ?? evidence.workerId ?? evidence.teamId ?? ''),
       ].join(' '));
 
       if (!haystack.includes(loweredQuery)) {
+        continue;
+      }
+
+      if (options.staleOnly && !entry.stale) {
+        continue;
+      }
+      if (options.repairableOnly && !isRepairableStaleEntry(entry)) {
         continue;
       }
 
@@ -114,6 +122,50 @@ export async function memorySearch(query, options = {}) {
     query: trimmedQuery,
     count: matches.length,
     matches: matches.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+  };
+}
+
+export async function memoryStale(options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
+  const entries = [];
+
+  for (const topicFile of topicFiles) {
+    for (const entry of topicFile.entries) {
+      if (!entry.stale) {
+        continue;
+      }
+      if (options.repairableOnly && !isRepairableStaleEntry(entry)) {
+        continue;
+      }
+
+      entries.push({
+        memoryId: entry.memoryId,
+        namespace: namespacePaths.namespace,
+        teamId: namespacePaths.teamId,
+        topic: topicFile.topic,
+        summary: entry.summary,
+        staleReason: entry.staleReason,
+        repairable: isRepairableStaleEntry(entry),
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+        replacedByMemoryId: entry.replacedByMemoryId,
+        repairedFromMemoryId: entry.repairedFromMemoryId,
+        evidence: entry.evidence,
+        topicPath: getTopicPath(namespacePaths, topicFile.topic),
+      });
+    }
+  }
+
+  return {
+    repoRoot,
+    namespace: namespacePaths.namespace,
+    teamId: namespacePaths.teamId,
+    count: entries.length,
+    repairableOnly: Boolean(options.repairableOnly),
+    entries: entries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
   };
 }
 
@@ -189,8 +241,8 @@ export async function memoryRepair(memoryId, options = {}) {
     if (!entry.stale) {
       throw new Error(`Memory entry ${trimmedMemoryId} is not stale.`);
     }
-    if (entry.staleReason === 'compacted_duplicate' || entry.staleReason === 'compacted_consolidated') {
-      throw new Error(`Memory entry ${trimmedMemoryId} was compacted, not invalidated; repair is only for evidence-backed stale entries.`);
+    if (!isRepairableStaleEntry(entry)) {
+      throw new Error(`Memory entry ${trimmedMemoryId} is not repairable; repair is only for evidence-backed stale entries.`);
     }
 
     const repairedEntry = {
@@ -473,6 +525,18 @@ function parseEvidence(value) {
     };
   }
 
+  if (value.kind === 'team') {
+    return {
+      kind: 'team',
+      teamId: typeof value.teamId === 'string' ? value.teamId : null,
+      teamPath: typeof value.teamPath === 'string' ? value.teamPath : null,
+      summaryText: typeof value.summaryText === 'string' ? value.summaryText : null,
+      previewCount: typeof value.previewCount === 'number' ? value.previewCount : null,
+      completedCount: typeof value.completedCount === 'number' ? value.completedCount : null,
+      capturedAt: normalizeNullableIso(value.capturedAt),
+    };
+  }
+
   return null;
 }
 
@@ -552,6 +616,10 @@ async function validateEvidence(repoRoot, evidence) {
     return validateWorkerEvidence(repoRoot, evidence);
   }
 
+  if (evidence.kind === 'team') {
+    return validateTeamEvidence(repoRoot, evidence);
+  }
+
   return { stale: true, reason: 'missing_evidence' };
 }
 
@@ -595,6 +663,39 @@ async function validateWorkerEvidence(repoRoot, evidence) {
 
   if (!isSuccessfulWorkerState(worker)) {
     return { stale: true, reason: 'worker_not_successful' };
+  }
+
+  return { stale: false, reason: null };
+}
+
+async function validateTeamEvidence(repoRoot, evidence) {
+  if (!evidence.teamPath || !evidence.teamId) {
+    return { stale: true, reason: 'missing_evidence' };
+  }
+
+  const teamPath = fromRepoRelative(repoRoot, evidence.teamPath);
+  try {
+    await fs.access(teamPath);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { stale: true, reason: 'missing_team_state' };
+    }
+    return { stale: true, reason: 'invalid_team_state' };
+  }
+
+  try {
+    const current = await resolveTeamEvidence(repoRoot, evidence.teamId, evidence.capturedAt ?? new Date().toISOString());
+    if (!current.summaryText || current.completedCount < 1) {
+      return { stale: true, reason: 'team_not_successful' };
+    }
+  } catch (error) {
+    if (String(error?.message ?? '').includes('not in a successful synthesized state')) {
+      return { stale: true, reason: 'team_not_successful' };
+    }
+    if (String(error?.message ?? '').includes('Team evidence not found')) {
+      return { stale: true, reason: 'missing_team_state' };
+    }
+    return { stale: true, reason: 'invalid_team_state' };
   }
 
   return { stale: false, reason: null };
@@ -665,22 +766,51 @@ async function resolveWorkerEvidence(repoRoot, workerId, capturedAt) {
   };
 }
 
+async function resolveTeamEvidence(repoRoot, teamId, capturedAt) {
+  let team;
+  try {
+    team = await teamShow(teamId, { cwd: repoRoot });
+  } catch (error) {
+    throw new Error(`Team evidence not found: ${teamId}${error instanceof Error && error.message ? ` (${error.message})` : ''}`);
+  }
+
+  if (!team?.synthesis?.summaryText || !Array.isArray(team.synthesis.completed) || team.synthesis.completed.length < 1) {
+    throw new Error(`Team ${teamId} is not in a successful synthesized state and cannot back a memory entry.`);
+  }
+
+  return {
+    kind: 'team',
+    teamId,
+    teamPath: toRepoRelative(repoRoot, getTeamEvidencePath(repoRoot, teamId)),
+    summaryText: team.synthesis.summaryText,
+    previewCount: Array.isArray(team.synthesis.previews) ? team.synthesis.previews.length : 0,
+    completedCount: Array.isArray(team.synthesis.completed) ? team.synthesis.completed.length : 0,
+    capturedAt,
+  };
+}
+
 async function resolveEvidenceFromOptions(repoRoot, options, capturedAt, actionName) {
   const runId = typeof options.runId === 'string' ? options.runId.trim() : '';
   const workerId = typeof options.workerId === 'string' ? options.workerId.trim() : '';
+  const teamResultId = typeof options.teamResultId === 'string' ? options.teamResultId.trim() : '';
 
-  if (!runId && !workerId) {
-    throw new Error(`${actionName} requires --run <runId> or --worker <workerId> so the note is evidence-backed.`);
+  const provided = [runId, workerId, teamResultId].filter(Boolean);
+  if (provided.length === 0) {
+    throw new Error(`${actionName} requires --run <runId>, --worker <workerId>, or --team-result <teamId> so the note is evidence-backed.`);
   }
-  if (runId && workerId) {
-    throw new Error(`${actionName} accepts exactly one evidence source: --run <runId> or --worker <workerId>.`);
+  if (provided.length > 1) {
+    throw new Error(`${actionName} accepts exactly one evidence source: --run <runId>, --worker <workerId>, or --team-result <teamId>.`);
   }
 
   if (runId) {
     return resolveRunEvidence(repoRoot, runId, capturedAt);
   }
 
-  return resolveWorkerEvidence(repoRoot, workerId, capturedAt);
+  if (workerId) {
+    return resolveWorkerEvidence(repoRoot, workerId, capturedAt);
+  }
+
+  return resolveTeamEvidence(repoRoot, teamResultId, capturedAt);
 }
 
 function buildIndexMarkdown(namespacePaths, topics, nowIso) {
@@ -779,6 +909,10 @@ function getWorkerEvidencePaths(repoRoot, workerId) {
   };
 }
 
+function getTeamEvidencePath(repoRoot, teamId) {
+  return path.join(getOpencodePaths(repoRoot).teamsDir, `${teamId}.json`);
+}
+
 function toRepoRelative(repoRoot, filePath) {
   return path.relative(repoRoot, filePath) || '.';
 }
@@ -820,6 +954,10 @@ function isSuccessfulWorkerState(worker) {
   const lastExitCode = typeof worker.lastExitCode === 'number' ? worker.lastExitCode : null;
 
   return runCount > 0 && lastExitCode === 0 && ['idle', 'blocked', 'stopped'].includes(status);
+}
+
+function isRepairableStaleEntry(entry) {
+  return Boolean(entry?.stale) && !['compacted_duplicate', 'compacted_consolidated', 'repaired'].includes(entry.staleReason);
 }
 
 function buildCompactKey(entry) {
@@ -930,6 +1068,9 @@ function getEvidenceIdentity(evidence) {
   }
   if (evidence.kind === 'worker') {
     return `${evidence.kind}:${evidence.workerId ?? evidence.statePath ?? 'unknown'}`;
+  }
+  if (evidence.kind === 'team') {
+    return `${evidence.kind}:${evidence.teamId ?? evidence.teamPath ?? 'unknown'}`;
   }
   return `${evidence.kind}:unknown`;
 }
