@@ -1,0 +1,12 @@
+{
+  "name": "@opencode-extension-stack/opencode-kairos",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "opencode-kairos": "./src/cli.js"
+  },
+  "exports": "./src/index.js",
+  "dependencies": {
+    "@opencode-extension-stack/opencode-core": "workspace:*"
+  }
+}
