@@ -21,9 +21,12 @@ test('ensureStateLayout creates the expected repo-local files', async () => {
   assert.equal(await exists(paths.jobs), true);
   assert.equal(await exists(paths.schedules), true);
   assert.equal(await exists(paths.memoryIndex), true);
+  assert.equal(await exists(paths.teamTemplatesDir), true);
 
   const config = await loadConfig(repoRoot);
   assert.deepEqual(config.repos.allowUnattended, ['.']);
+  assert.equal(config.remote.approvalRequired, true);
+  assert.equal(config.remote.maxStatusRequests, 20);
   assert.equal(config.memory.compact.topicConsolidationMinActive, 3);
   assert.equal(config.memory.compact.contradictionMinSharedTerms, 2);
   assert.equal(config.memory.repair.maxListedEntries, 20);
@@ -48,11 +51,17 @@ test('loadConfig parses memory policy overrides', async () => {
           maxListedEntries: 5,
         },
       },
+      remote: {
+        approvalRequired: false,
+        maxStatusRequests: 7,
+      },
     }, null, 2)}\n`,
     'utf8',
   );
 
   const config = await loadConfig(repoRoot);
+  assert.equal(config.remote.approvalRequired, false);
+  assert.equal(config.remote.maxStatusRequests, 7);
   assert.equal(config.memory.compact.topicConsolidationMinActive, 4);
   assert.equal(config.memory.compact.crossTopicMergeMinSharedTerms, 3);
   assert.equal(config.memory.compact.crossTopicMergeMinSimilarity, 0.9);

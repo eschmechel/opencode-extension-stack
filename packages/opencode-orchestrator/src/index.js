@@ -230,8 +230,15 @@ export async function workerSteer(workerId, message, options = {}) {
 }
 
 export async function teamCreate(count, prompt, options = {}) {
-  const requestedCount = Number(count);
-  const trimmedPrompt = prompt.trim();
+  const repoRoot = await prepareRepo(options.cwd);
+  const template = options.templateName ? await readTeamTemplate(repoRoot, options.templateName) : null;
+
+  const requestedCount = Number.isInteger(Number(count)) && Number(count) > 0
+    ? Number(count)
+    : template?.requestedCount;
+  const trimmedPrompt = typeof prompt === 'string' && prompt.trim()
+    ? prompt.trim()
+    : template?.prompt ?? '';
   if (!Number.isInteger(requestedCount) || requestedCount < 1) {
     throw new Error('A worker count >= 1 is required for /team create.');
   }
@@ -240,17 +247,17 @@ export async function teamCreate(count, prompt, options = {}) {
     throw new Error('A prompt is required for /team create.');
   }
 
-  const repoRoot = await prepareRepo(options.cwd);
   const createdAt = toIso(options.now);
-  const maxConcurrentWorkers = options.maxConcurrentWorkers ?? requestedCount;
-  const maxTotalRuns = options.maxTotalRuns ?? null;
+  const maxConcurrentWorkers = options.maxConcurrentWorkers ?? template?.maxConcurrentWorkers ?? requestedCount;
+  const maxTotalRuns = options.maxTotalRuns ?? template?.maxTotalRuns ?? null;
   const team = parseTeamRecord({
     teamId: createStableId('team'),
-    name: options.name ?? null,
+    name: options.name ?? template?.name ?? null,
     prompt: trimmedPrompt,
     requestedCount,
     maxConcurrentWorkers,
     maxTotalRuns,
+    templateName: template?.templateName ?? null,
     workerIds: [],
     status: 'active',
     createdAt,
@@ -278,14 +285,100 @@ export async function teamCreate(count, prompt, options = {}) {
   team.updatedAt = toIso(options.now);
   await writeTeamState(repoRoot, team);
   await advanceTeamQueue(repoRoot, team.teamId, options.now);
+  const memory = await summarizeTeamMemory(repoRoot, team.teamId);
   return {
     ...team,
     workers,
+    memory,
   };
 }
 
 export async function parallelStart(count, prompt, options = {}) {
   return teamCreate(count, prompt, options);
+}
+
+export async function teamTemplateSave(templateName, options = {}) {
+  const trimmedTemplateName = slugifyName(templateName);
+  if (!trimmedTemplateName) {
+    throw new Error('A template name is required for /team template save.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+
+  return withOrchestratorLock(repoRoot, async () => {
+    let source = null;
+    if (options.fromTeamId) {
+      source = await readTeamState(repoRoot, options.fromTeamId);
+    }
+
+    const requestedCount = Number.isInteger(Number(options.count)) && Number(options.count) > 0
+      ? Number(options.count)
+      : source?.requestedCount;
+    const prompt = typeof options.prompt === 'string' && options.prompt.trim()
+      ? options.prompt.trim()
+      : source?.prompt ?? '';
+
+    if (!Number.isInteger(requestedCount) || requestedCount < 1) {
+      throw new Error('A worker count >= 1 is required for /team template save.');
+    }
+    if (!prompt) {
+      throw new Error('A prompt is required for /team template save.');
+    }
+
+    const existing = await readTeamTemplate(repoRoot, trimmedTemplateName).catch(() => null);
+    const template = parseTeamTemplateRecord({
+      templateName: trimmedTemplateName,
+      name: options.name ?? source?.name ?? trimmedTemplateName,
+      description: options.description ?? existing?.description ?? null,
+      requestedCount,
+      prompt,
+      maxConcurrentWorkers: options.maxConcurrentWorkers ?? source?.maxConcurrentWorkers ?? requestedCount,
+      maxTotalRuns: options.maxTotalRuns ?? source?.maxTotalRuns ?? null,
+      createdAt: existing?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+    });
+
+    await writeTeamTemplate(repoRoot, template);
+    return template;
+  });
+}
+
+export async function teamTemplateList(options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  const entries = await fs.readdir(getOpencodePaths(repoRoot).teamTemplatesDir, { withFileTypes: true }).catch(() => []);
+  const templates = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+
+    try {
+      templates.push(await readTeamTemplate(repoRoot, path.basename(entry.name, '.json')));
+    } catch {
+      // Ignore malformed template records during listing.
+    }
+  }
+
+  return templates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+export async function teamTemplateShow(templateName, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  return readTeamTemplate(repoRoot, templateName);
+}
+
+export async function teamTemplateDelete(templateName, options = {}) {
+  const trimmedTemplateName = slugifyName(templateName);
+  if (!trimmedTemplateName) {
+    throw new Error('A template name is required for /team template delete.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const template = await readTeamTemplate(repoRoot, trimmedTemplateName);
+  await fs.rm(getTeamTemplatePath(repoRoot, trimmedTemplateName), { force: true });
+  return template;
 }
 
 export async function teamList(options = {}) {
@@ -615,6 +708,10 @@ function getTeamPath(repoRoot, teamId) {
   return path.join(getOpencodePaths(repoRoot).teamsDir, `${teamId}.json`);
 }
 
+function getTeamTemplatePath(repoRoot, templateName) {
+  return path.join(getOpencodePaths(repoRoot).teamTemplatesDir, `${slugifyName(templateName)}.json`);
+}
+
 async function prepareRepo(cwd = process.cwd()) {
   const repoRoot = await findRepoRoot(cwd);
   await ensureStateLayout(repoRoot);
@@ -632,6 +729,11 @@ async function readTeamState(repoRoot, teamId) {
   return parseTeamRecord(JSON.parse(content));
 }
 
+async function readTeamTemplate(repoRoot, templateName) {
+  const content = await fs.readFile(getTeamTemplatePath(repoRoot, templateName), 'utf8');
+  return parseTeamTemplateRecord(JSON.parse(content));
+}
+
 async function writeWorkerState(repoRoot, workerId, worker) {
   const workerPaths = getWorkerPaths(repoRoot, workerId);
   await fs.mkdir(workerPaths.rootDir, { recursive: true });
@@ -645,6 +747,13 @@ async function writeTeamState(repoRoot, team) {
   const tempPath = `${teamPath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempPath, `${JSON.stringify(parseTeamRecord(team), null, 2)}\n`, 'utf8');
   await fs.rename(tempPath, teamPath);
+}
+
+async function writeTeamTemplate(repoRoot, template) {
+  const templatePath = getTeamTemplatePath(repoRoot, template.templateName);
+  const tempPath = `${templatePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(parseTeamTemplateRecord(template), null, 2)}\n`, 'utf8');
+  await fs.rename(tempPath, templatePath);
 }
 
 async function appendWorkerControl(repoRoot, workerId, type, payload) {
@@ -937,6 +1046,7 @@ async function enrichTeamView(repoRoot, team) {
     ...team,
     counts,
     workerCount: liveWorkers.length,
+    memory: await summarizeTeamMemory(repoRoot, team.teamId),
     synthesis: await synthesizeTeamResults(repoRoot, liveWorkers),
     workers: liveWorkers.map((worker) => ({
       workerId: worker.workerId,
@@ -948,6 +1058,42 @@ async function enrichTeamView(repoRoot, team) {
       trustGateState: worker.trustGateState,
       trustGateMessage: worker.trustGateMessage,
     })),
+  };
+}
+
+async function summarizeTeamMemory(repoRoot, teamId) {
+  const namespaceDir = path.join(getOpencodePaths(repoRoot).memoryTeamDir, teamId);
+  const topicsDir = path.join(namespaceDir, 'topics');
+  const indexPath = path.join(namespaceDir, 'MEMORY.md');
+  const entries = await fs.readdir(topicsDir, { withFileTypes: true }).catch(() => []);
+  let topicCount = 0;
+  let entryCount = 0;
+  let staleCount = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+
+    topicCount += 1;
+    try {
+      const content = JSON.parse(await fs.readFile(path.join(topicsDir, entry.name), 'utf8'));
+      const topicEntries = Array.isArray(content.entries) ? content.entries : [];
+      entryCount += topicEntries.length;
+      staleCount += topicEntries.filter((item) => item?.stale).length;
+    } catch {
+      // Ignore malformed topic files in summary output.
+    }
+  }
+
+  return {
+    namespace: teamId,
+    memoryDir: namespaceDir,
+    indexPath,
+    topicCount,
+    entryCount,
+    staleCount,
+    activeCount: Math.max(0, entryCount - staleCount),
   };
 }
 
@@ -1509,6 +1655,7 @@ function parseTeamRecord(value) {
   return {
     teamId: String(value.teamId),
     name: typeof value.name === 'string' ? value.name : null,
+    templateName: typeof value.templateName === 'string' ? value.templateName : null,
     prompt: String(value.prompt),
     requestedCount: Number.isInteger(value.requestedCount) ? value.requestedCount : 0,
     maxConcurrentWorkers: Number.isInteger(value.maxConcurrentWorkers) ? value.maxConcurrentWorkers : value.requestedCount,
@@ -1520,6 +1667,37 @@ function parseTeamRecord(value) {
     archiveCount: Number.isInteger(value.archiveCount) ? value.archiveCount : 0,
     lastArchivePath: typeof value.lastArchivePath === 'string' ? value.lastArchivePath : null,
     prunedAt: normalizeNullableIso(value.prunedAt),
+  };
+}
+
+function parseTeamTemplateRecord(value) {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Invalid team template record.');
+  }
+
+  const templateName = slugifyName(value.templateName);
+  const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : '';
+  const requestedCount = Number.isInteger(value.requestedCount) ? value.requestedCount : 0;
+  if (!templateName) {
+    throw new Error('Invalid team template record: templateName is required.');
+  }
+  if (!prompt) {
+    throw new Error('Invalid team template record: prompt is required.');
+  }
+  if (requestedCount < 1) {
+    throw new Error('Invalid team template record: requestedCount must be >= 1.');
+  }
+
+  return {
+    templateName,
+    name: typeof value.name === 'string' ? value.name : null,
+    description: typeof value.description === 'string' ? value.description : null,
+    prompt,
+    requestedCount,
+    maxConcurrentWorkers: Number.isInteger(value.maxConcurrentWorkers) ? value.maxConcurrentWorkers : requestedCount,
+    maxTotalRuns: Number.isInteger(value.maxTotalRuns) ? value.maxTotalRuns : null,
+    createdAt: normalizeIso(value.createdAt),
+    updatedAt: normalizeIso(value.updatedAt),
   };
 }
 
@@ -1544,6 +1722,14 @@ function normalizeTrustGate(value) {
 
 function toIso(value) {
   return new Date(value ?? Date.now()).toISOString();
+}
+
+function slugifyName(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function summarizeError(execution) {

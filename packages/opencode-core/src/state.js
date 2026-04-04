@@ -46,6 +46,7 @@ export function getOpencodePaths(repoRoot) {
     runsDir: path.join(root, 'runs'),
     workersDir: path.join(root, 'workers'),
     teamsDir: path.join(root, 'teams'),
+    teamTemplatesDir: path.join(root, 'teams', 'templates'),
     remoteDir: path.join(root, 'remote'),
     memoryDir: memoryRoot,
     memoryIndex: path.join(memoryRoot, 'MEMORY.md'),
@@ -62,6 +63,7 @@ export async function ensureStateLayout(repoRoot) {
   await fs.mkdir(paths.runsDir, { recursive: true });
   await fs.mkdir(paths.workersDir, { recursive: true });
   await fs.mkdir(paths.teamsDir, { recursive: true });
+  await fs.mkdir(paths.teamTemplatesDir, { recursive: true });
   await fs.mkdir(paths.remoteDir, { recursive: true });
   await fs.mkdir(paths.memoryDir, { recursive: true });
   await fs.mkdir(paths.memoryTopicsDir, { recursive: true });

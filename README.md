@@ -11,7 +11,7 @@ This repo started as an empty git repository, so the first pass focuses on a cle
 - `packages/opencode-orchestrator`: placeholder for detached worker lifecycle
 - `packages/opencode-memory`: evidence-backed skeptical memory storage, search, and compaction
 - `packages/opencode-packs`: reusable command pack registry, renderer, and contract validator
-- `packages/opencode-bridge`: placeholder for remote control plane work
+- `packages/opencode-bridge`: remote enqueue, approval flow, and local control-plane state
 
 ## Current Commands
 
@@ -42,6 +42,12 @@ Run worker lifecycle commands with `pnpm run orchestrator -- ...`.
 - `retention status`
 - `retention apply [--dry-run]`
 - `/team create <count> <prompt>`
+- `/team create --template <name> [prompt override]`
+- `/team template save <name> <count> <prompt>`
+- `/team template save <name> --from-team <teamId>`
+- `/team template list`
+- `/team template show <name>`
+- `/team template delete <name>`
 - `/team list`
 - `/team show <id>`
 - `/team archive <id>`
@@ -81,6 +87,13 @@ Run pack commands with `pnpm run packs -- ...`.
 - `/review <request>`
 - `/review-remote <request>`
 
+Run remote bridge commands with `pnpm run bridge -- ...`.
+
+- `/remote status [id]`
+- `/remote enqueue <prompt>`
+- `/remote approve <id>`
+- `/remote revoke [id]`
+
 Examples:
 
 ```bash
@@ -98,6 +111,8 @@ pnpm run kairos -- daemon start 5000 --force
 pnpm run orchestrator -- retention status
 pnpm run orchestrator -- retention apply --dry-run
 pnpm run orchestrator -- /team create 3 "investigate flaky test output"
+pnpm run orchestrator -- /team template save review-template 2 "review current branch changes" --max-concurrency 1 --max-total-runs 3
+pnpm run orchestrator -- /team create --template review-template
 pnpm run orchestrator -- /team list
 pnpm run orchestrator -- /team show <team-id>
 pnpm run orchestrator -- /parallel 2 "compare two implementation approaches"
@@ -116,6 +131,9 @@ pnpm run packs -- /packs list
 pnpm run packs -- /packs show review
 pnpm run packs -- /ultraplan "Design a safe rollout plan"
 pnpm run packs -- /packs render review-remote "Review remote branch changes" --context "Snapshot attached" --json
+pnpm run bridge -- /remote enqueue "summarize open failures" --requested-by mobile
+pnpm run bridge -- /remote approve <remote-id>
+pnpm run bridge -- /remote status
 ```
 
 Supported schedule formats in the current slice:
@@ -143,6 +161,11 @@ The first command bootstrap creates repo-local state under `.opencode/`:
 - `.opencode/memory/topics/`
 - `.opencode/memory/team/`
 - `.opencode/remote/`
+
+Remote bridge state currently uses:
+
+- `.opencode/remote/requests.json`
+- `.opencode/remote/events.ndjson`
 
 State is intentionally gitignored so unattended/runtime artifacts stay local to the working repo.
 
@@ -179,9 +202,13 @@ Each run directory can contain:
 ## Team Behavior
 
 - team records live under `.opencode/teams/*.json`
+- team templates live under `.opencode/teams/templates/*.json`
 - `/parallel` is a thin worker-fanout path built on top of team creation
 - team list aggregates worker states into per-team counts for quick supervision
 - teams expose synthesized summaries and per-worker branch status via `/team show`
+- `/team show` also exposes the per-team memory namespace path and entry counts
+- `/team create --template ...` and `/parallel --template ...` reuse saved fanout defaults for easy relaunch
+- `/team template save --from-team ...` can capture an existing team setup as a reusable template
 - rerun support is available through `/team rerun-failed`
 - per-team concurrency and total run budgets can be set on create/parallel commands
 
@@ -221,6 +248,15 @@ Each run directory can contain:
 - `/review-remote` renders an async approval/handoff review packet for remote workflows
 - `/packs validate` checks a JSON output payload against the selected pack contract
 
+## Remote Behavior
+
+- remote requests are stored under `.opencode/remote/` so they can be monitored without keeping a local TUI session open
+- `/remote enqueue` creates an approval-gated request by default
+- `/remote approve` turns an approved request into a local Kairos queue job
+- `/remote revoke` revokes pending approvals and can cancel a still-queued remote job before it starts
+- `/remote status` polls request state and follows the linked Kairos job once approved
+- prompts beginning with `/review` or `/review-remote` are tagged as remote review handoffs
+
 `config.json` now supports:
 
 ```json
@@ -242,6 +278,10 @@ Each run directory can contain:
       "maxArchiveBytes": 50000000,
       "allowDeleteArchived": false
     }
+  },
+  "remote": {
+    "approvalRequired": true,
+    "maxStatusRequests": 20
   },
   "memory": {
     "compact": {

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadConfig, saveConfig } from '../../opencode-core/src/index.js';
+import { getOpencodePaths, loadConfig, saveConfig } from '../../opencode-core/src/index.js';
 
 import {
   parallelStart,
@@ -18,6 +18,10 @@ import {
   teamPrune,
   teamRerunFailed,
   teamShow,
+  teamTemplateDelete,
+  teamTemplateList,
+  teamTemplateSave,
+  teamTemplateShow,
   workerArchive,
   workerList,
   workerPrune,
@@ -86,6 +90,82 @@ test('teamCreate and parallelStart create grouped workers', async () => {
   assert.equal(shown.workers.length, 2);
   assert.equal(shown.maxConcurrentWorkers, 1);
   assert.equal(shown.counts.blocked >= 1, true);
+});
+
+test('team templates can be saved, listed, shown, used, and deleted', async () => {
+  const repoRoot = await createTempRepo();
+  const now = new Date().toISOString();
+
+  const saved = await teamTemplateSave('review-template', {
+    cwd: repoRoot,
+    now,
+    count: 2,
+    prompt: 'review current branch changes',
+    name: 'Review Template',
+    description: 'default review fanout',
+    maxConcurrentWorkers: 1,
+    maxTotalRuns: 3,
+  });
+
+  const shownTemplate = await teamTemplateShow('review-template', { cwd: repoRoot });
+  const listedTemplates = await teamTemplateList({ cwd: repoRoot });
+  assert.equal(saved.templateName, 'review-template');
+  assert.equal(shownTemplate.requestedCount, 2);
+  assert.equal(listedTemplates.length, 1);
+
+  const team = await teamCreate(undefined, '', {
+    cwd: repoRoot,
+    now,
+    templateName: 'review-template',
+    spawnWorkerProcess: () => ({ pid: process.pid }),
+  });
+
+  assert.equal(team.templateName, 'review-template');
+  assert.equal(team.workerIds.length, 2);
+  assert.equal(team.maxConcurrentWorkers, 1);
+  assert.equal(team.maxTotalRuns, 3);
+  assert.equal(team.prompt, 'review current branch changes');
+
+  const deleted = await teamTemplateDelete('review-template', { cwd: repoRoot });
+  assert.equal(deleted.templateName, 'review-template');
+  assert.equal((await teamTemplateList({ cwd: repoRoot })).length, 0);
+});
+
+test('teamShow exposes per-team memory namespace summary', async () => {
+  const repoRoot = await createTempRepo();
+  const now = new Date().toISOString();
+  const team = await teamCreate(1, 'memory aware task', {
+    cwd: repoRoot,
+    now,
+    spawnWorkerProcess: () => ({ pid: process.pid }),
+  });
+
+  const paths = getOpencodePaths(repoRoot);
+  const memoryDir = path.join(paths.memoryTeamDir, team.teamId);
+  await fs.mkdir(path.join(memoryDir, 'topics'), { recursive: true });
+  await fs.writeFile(path.join(memoryDir, 'MEMORY.md'), '# MEMORY\n', 'utf8');
+  await fs.writeFile(
+    path.join(memoryDir, 'topics', 'queue.json'),
+    `${JSON.stringify({
+      version: 1,
+      topic: 'queue',
+      createdAt: now,
+      updatedAt: now,
+      entries: [
+        { memoryId: 'memory_one', topic: 'queue', summary: 'active note', createdAt: now, updatedAt: now, stale: false, staleReason: null, evidence: [] },
+        { memoryId: 'memory_two', topic: 'queue', summary: 'stale note', createdAt: now, updatedAt: now, stale: true, staleReason: 'missing_run_result', evidence: [] },
+      ],
+    }, null, 2)}\n`,
+    'utf8',
+  );
+
+  const shown = await teamShow(team.teamId, { cwd: repoRoot, now });
+  assert.equal(shown.memory.namespace, team.teamId);
+  assert.match(shown.memory.indexPath, new RegExp(`memory/team/${team.teamId}/MEMORY\\.md$`));
+  assert.equal(shown.memory.topicCount, 1);
+  assert.equal(shown.memory.entryCount, 2);
+  assert.equal(shown.memory.activeCount, 1);
+  assert.equal(shown.memory.staleCount, 1);
 });
 
 test('runWorkerLoop processes initial and steered prompts then stops cleanly', async () => {
