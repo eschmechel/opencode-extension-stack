@@ -410,6 +410,61 @@ export async function teamShow(teamId, options = {}) {
   return enrichTeamView(repoRoot, await readTeamState(repoRoot, teamId));
 }
 
+export async function teamMemoryShow(teamId, topic = '', options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memoryShow } = await loadMemoryModule();
+  return memoryShow(topic, { cwd: repoRoot, teamId, now: options.now });
+}
+
+export async function teamMemorySearch(teamId, query, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memorySearch } = await loadMemoryModule();
+  return memorySearch(query, {
+    cwd: repoRoot,
+    teamId,
+    now: options.now,
+    staleOnly: options.staleOnly,
+    repairableOnly: options.repairableOnly,
+    limit: options.limit,
+  });
+}
+
+export async function teamMemoryStale(teamId, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memoryStale } = await loadMemoryModule();
+  return memoryStale({
+    cwd: repoRoot,
+    teamId,
+    now: options.now,
+    repairableOnly: options.repairableOnly,
+    limit: options.limit,
+  });
+}
+
+export async function teamMemoryContradictions(teamId, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memoryContradictions } = await loadMemoryModule();
+  return memoryContradictions({ cwd: repoRoot, teamId, now: options.now });
+}
+
+export async function teamMemoryRebuild(teamId, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memoryRebuild } = await loadMemoryModule();
+  return memoryRebuild({ cwd: repoRoot, teamId, now: options.now });
+}
+
+export async function teamMemoryCompact(teamId, options = {}) {
+  const repoRoot = await prepareRepo(options.cwd);
+  await assertTeamMemoryNamespaceAvailable(repoRoot, teamId);
+  const { memoryCompact } = await loadMemoryModule();
+  return memoryCompact({ cwd: repoRoot, teamId, now: options.now });
+}
+
 export async function teamDelete(teamId, options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
 
@@ -1062,7 +1117,7 @@ async function enrichTeamView(repoRoot, team) {
 }
 
 async function summarizeTeamMemory(repoRoot, teamId) {
-  const namespaceDir = path.join(getOpencodePaths(repoRoot).memoryTeamDir, teamId);
+  const namespaceDir = getTeamMemoryNamespaceDir(repoRoot, teamId);
   const topicsDir = path.join(namespaceDir, 'topics');
   const indexPath = path.join(namespaceDir, 'MEMORY.md');
   const entries = await fs.readdir(topicsDir, { withFileTypes: true }).catch(() => []);
@@ -1095,6 +1150,23 @@ async function summarizeTeamMemory(repoRoot, teamId) {
     staleCount,
     activeCount: Math.max(0, entryCount - staleCount),
   };
+}
+
+async function assertTeamMemoryNamespaceAvailable(repoRoot, teamId) {
+  const teamPath = getTeamPath(repoRoot, teamId);
+  const namespaceDir = getTeamMemoryNamespaceDir(repoRoot, teamId);
+  if (await exists(teamPath) || await exists(namespaceDir)) {
+    return;
+  }
+
+  throw new Error(`Team memory namespace not found: ${teamId}`);
+}
+
+let memoryModulePromise;
+
+async function loadMemoryModule() {
+  memoryModulePromise ??= import('../../opencode-memory/src/index.js');
+  return memoryModulePromise;
 }
 
 async function loadWorkerDirectories(repoRoot) {
@@ -1730,6 +1802,10 @@ function slugifyName(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function getTeamMemoryNamespaceDir(repoRoot, teamId) {
+  return path.join(getOpencodePaths(repoRoot).memoryTeamDir, slugifyName(teamId));
 }
 
 function summarizeError(execution) {

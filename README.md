@@ -48,6 +48,7 @@ Run worker lifecycle commands with `pnpm run orchestrator -- ...`.
 - `/team template list`
 - `/team template show <name>`
 - `/team template delete <name>`
+- `/team memory <teamId> [show [topic] | search <query> [--stale] [--repairable] | stale [--repairable] | contradictions | rebuild | compact]`
 - `/team list`
 - `/team show <id>`
 - `/team archive <id>`
@@ -113,6 +114,8 @@ pnpm run orchestrator -- retention apply --dry-run
 pnpm run orchestrator -- /team create 3 "investigate flaky test output"
 pnpm run orchestrator -- /team template save review-template 2 "review current branch changes" --max-concurrency 1 --max-total-runs 3
 pnpm run orchestrator -- /team create --template review-template
+pnpm run orchestrator -- /team memory <team-id> show
+pnpm run orchestrator -- /team memory <team-id> contradictions
 pnpm run orchestrator -- /team list
 pnpm run orchestrator -- /team show <team-id>
 pnpm run orchestrator -- /parallel 2 "compare two implementation approaches"
@@ -207,6 +210,7 @@ Each run directory can contain:
 - team list aggregates worker states into per-team counts for quick supervision
 - teams expose synthesized summaries and per-worker branch status via `/team show`
 - `/team show` also exposes the per-team memory namespace path and entry counts
+- `/team memory ...` provides a team-scoped shortcut into the existing memory system without manually repeating `--team <teamId>`
 - `/team create --template ...` and `/parallel --template ...` reuse saved fanout defaults for easy relaunch
 - `/team template save --from-team ...` can capture an existing team setup as a reusable template
 - rerun support is available through `/team rerun-failed`

@@ -8,6 +8,12 @@ import {
   teamCreate,
   teamDelete,
   teamList,
+  teamMemoryCompact,
+  teamMemoryContradictions,
+  teamMemoryRebuild,
+  teamMemorySearch,
+  teamMemoryShow,
+  teamMemoryStale,
   teamPrune,
   teamRerunFailed,
   teamShow,
@@ -219,6 +225,10 @@ async function runTeam(subcommand, args) {
       await runTeamTemplate(args);
       return;
     }
+    case 'memory': {
+      await runTeamMemory(args.slice(1));
+      return;
+    }
     case 'list': {
       const teams = await teamList();
       printHeader(`Teams (${teams.length})`);
@@ -323,7 +333,7 @@ async function runTeam(subcommand, args) {
       return;
     }
     default:
-      throw new Error('Usage: /team create <count> <prompt> [--name <display-name>] [--max-concurrency N] [--max-total-runs N] | /team create --template <name> [prompt override] [--name <display-name>] [--max-concurrency N] [--max-total-runs N] | /team template save <name> <count> <prompt> | /team template list | /team template show <name> | /team template delete <name> | /team list | /team show <id> | /team archive <id> | /team prune <id> | /team delete <id> | /team rerun-failed <id>');
+      throw new Error('Usage: /team create <count> <prompt> [--name <display-name>] [--max-concurrency N] [--max-total-runs N] | /team create --template <name> [prompt override] [--name <display-name>] [--max-concurrency N] [--max-total-runs N] | /team template save <name> <count> <prompt> | /team template list | /team template show <name> | /team template delete <name> | /team memory <teamId> [show [topic] | search <query> [--stale] [--repairable] | stale [--repairable] | contradictions | rebuild | compact] | /team list | /team show <id> | /team archive <id> | /team prune <id> | /team delete <id> | /team rerun-failed <id>');
   }
 }
 
@@ -393,6 +403,78 @@ async function runTeamTemplate(args) {
     }
     default:
       throw new Error('Usage: /team template save <name> <count> <prompt> [--max-concurrency N] [--max-total-runs N] [--description <text>] [--name <display-name>] | /team template save <name> --from-team <teamId> [--description <text>] | /team template list | /team template show <name> | /team template delete <name>');
+  }
+}
+
+async function runTeamMemory(args) {
+  const teamId = args[0] ?? '';
+  const subcommand = args[1] ?? 'show';
+  const rest = args.slice(2);
+
+  switch (subcommand) {
+    case 'show': {
+      const topic = rest.join(' ').trim();
+      const result = await teamMemoryShow(teamId, topic);
+      if (result.scope === 'index') {
+        printHeader(`Team memory ${teamId}`);
+        printKeyValue('index', result.indexPath);
+        printKeyValue('topics', result.topics.length);
+        printKeyValue('merge candidates', result.mergeCandidates.length);
+        printKeyValue('contradiction alerts', result.contradictionAlerts.length);
+        printKeyValue('drift alerts', result.driftAlerts.length);
+        return;
+      }
+
+      printHeader(`Team memory ${teamId} topic ${result.topic}`);
+      printKeyValue('file', result.topicPath);
+      printKeyValue('entries', result.summary.entryCount);
+      printKeyValue('active', result.summary.activeCount);
+      printKeyValue('stale', result.summary.staleCount);
+      return;
+    }
+    case 'search': {
+      const parsed = parseMemorySearchArgs(rest);
+      const result = await teamMemorySearch(teamId, parsed.query, parsed);
+      printHeader(`Team memory search ${teamId}: ${result.query}`);
+      printKeyValue('matches', result.count);
+      if (result.truncated) {
+        printKeyValue('total matches', result.totalCount);
+      }
+      return;
+    }
+    case 'stale': {
+      const repairableOnly = rest.includes('--repairable');
+      const result = await teamMemoryStale(teamId, { repairableOnly });
+      printHeader(`Team stale memory ${teamId}`);
+      printKeyValue('entries', result.count);
+      if (result.truncated) {
+        printKeyValue('total entries', result.totalCount);
+      }
+      return;
+    }
+    case 'contradictions': {
+      const result = await teamMemoryContradictions(teamId);
+      printHeader(`Team memory contradictions ${teamId}`);
+      printKeyValue('alerts', result.count);
+      return;
+    }
+    case 'rebuild': {
+      const result = await teamMemoryRebuild(teamId);
+      printHeader(`Team memory rebuilt ${teamId}`);
+      printKeyValue('index', result.indexPath);
+      printKeyValue('topics', result.topics.length);
+      return;
+    }
+    case 'compact': {
+      const result = await teamMemoryCompact(teamId);
+      printHeader(`Team memory compacted ${teamId}`);
+      printKeyValue('topics updated', result.topicsUpdated);
+      printKeyValue('entries checked', result.entriesChecked);
+      printKeyValue('stale marked', result.staleMarked);
+      return;
+    }
+    default:
+      throw new Error('Usage: /team memory <teamId> [show [topic] | search <query> [--stale] [--repairable] | stale [--repairable] | contradictions | rebuild | compact]');
   }
 }
 
@@ -527,6 +609,31 @@ function parseTeamTemplateSaveArgs(args) {
   };
 }
 
+function parseMemorySearchArgs(args) {
+  const queryParts = [];
+  let staleOnly = false;
+  let repairableOnly = false;
+
+  for (const value of args) {
+    if (value === '--stale') {
+      staleOnly = true;
+      continue;
+    }
+    if (value === '--repairable') {
+      staleOnly = true;
+      repairableOnly = true;
+      continue;
+    }
+    queryParts.push(value);
+  }
+
+  return {
+    query: queryParts.join(' ').trim(),
+    staleOnly,
+    repairableOnly,
+  };
+}
+
 function stripSlash(value) {
   return value.startsWith('/') ? value.slice(1) : value;
 }
@@ -552,6 +659,7 @@ function printHelp() {
   console.log('  /team template list');
   console.log('  /team template show <name>');
   console.log('  /team template delete <name>');
+  console.log('  /team memory <teamId> [show [topic] | search <query> [--stale] [--repairable] | stale [--repairable] | contradictions | rebuild | compact]');
   console.log('  /team list');
   console.log('  /team show <id>');
   console.log('  /team archive <id>');

@@ -15,6 +15,12 @@ import {
   teamCreate,
   teamDelete,
   teamList,
+  teamMemoryCompact,
+  teamMemoryContradictions,
+  teamMemoryRebuild,
+  teamMemorySearch,
+  teamMemoryShow,
+  teamMemoryStale,
   teamPrune,
   teamRerunFailed,
   teamShow,
@@ -141,7 +147,7 @@ test('teamShow exposes per-team memory namespace summary', async () => {
   });
 
   const paths = getOpencodePaths(repoRoot);
-  const memoryDir = path.join(paths.memoryTeamDir, team.teamId);
+  const memoryDir = path.join(paths.memoryTeamDir, team.teamId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''));
   await fs.mkdir(path.join(memoryDir, 'topics'), { recursive: true });
   await fs.writeFile(path.join(memoryDir, 'MEMORY.md'), '# MEMORY\n', 'utf8');
   await fs.writeFile(
@@ -161,11 +167,61 @@ test('teamShow exposes per-team memory namespace summary', async () => {
 
   const shown = await teamShow(team.teamId, { cwd: repoRoot, now });
   assert.equal(shown.memory.namespace, team.teamId);
-  assert.match(shown.memory.indexPath, new RegExp(`memory/team/${team.teamId}/MEMORY\\.md$`));
+  assert.match(shown.memory.indexPath, /memory\/team\/.*\/MEMORY\.md$/);
   assert.equal(shown.memory.topicCount, 1);
   assert.equal(shown.memory.entryCount, 2);
   assert.equal(shown.memory.activeCount, 1);
   assert.equal(shown.memory.staleCount, 1);
+});
+
+test('team memory helpers expose team-scoped memory workflows', async () => {
+  const repoRoot = await createTempRepo();
+  const now = new Date().toISOString();
+  const team = await teamCreate(1, 'memory team task', {
+    cwd: repoRoot,
+    now,
+    spawnWorkerProcess: () => ({ pid: process.pid }),
+  });
+
+  const { memoryAdd } = await import('../../opencode-memory/src/index.js');
+  const paths = getOpencodePaths(repoRoot);
+
+  const runIds = ['team_memory_one', 'team_memory_two'];
+  for (const runId of runIds) {
+    const runDir = path.join(paths.runsDir, runId);
+    await fs.mkdir(runDir, { recursive: true });
+    await fs.writeFile(path.join(runDir, 'stdout.txt'), '', 'utf8');
+    await fs.writeFile(path.join(runDir, 'stderr.txt'), '', 'utf8');
+    await fs.writeFile(path.join(runDir, 'events.ndjson'), '', 'utf8');
+    await fs.writeFile(path.join(runDir, 'result.json'), `${JSON.stringify({ exitCode: 0 }, null, 2)}\n`, 'utf8');
+  }
+
+  await memoryAdd('Allow unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    topic: 'Policy',
+    runId: 'team_memory_one',
+  });
+  await memoryAdd('Deny unattended edits in protected branch workflows.', {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    topic: 'Policy',
+    runId: 'team_memory_two',
+  });
+
+  const shown = await teamMemoryShow(team.teamId, '', { cwd: repoRoot, now });
+  const search = await teamMemorySearch(team.teamId, 'protected branch', { cwd: repoRoot, now });
+  const contradictions = await teamMemoryContradictions(team.teamId, { cwd: repoRoot, now });
+  const rebuilt = await teamMemoryRebuild(team.teamId, { cwd: repoRoot, now });
+  const compacted = await teamMemoryCompact(team.teamId, { cwd: repoRoot, now });
+  const stale = await teamMemoryStale(team.teamId, { cwd: repoRoot, now });
+
+  assert.equal(shown.scope, 'index');
+  assert.equal(search.count, 2);
+  assert.equal(contradictions.count, 1);
+  assert.equal(rebuilt.contradictionAlerts.length, 1);
+  assert.match(compacted.indexPath, /memory\/team\/.*\/MEMORY\.md$/);
+  assert.equal(stale.count, 0);
 });
 
 test('runWorkerLoop processes initial and steered prompts then stops cleanly', async () => {
