@@ -5,5 +5,9 @@
   "bin": {
     "opencode-bridge": "./src/cli.js"
   },
-  "exports": "./src/index.js"
+  "exports": "./src/index.js",
+  "dependencies": {
+    "@opencode-extension-stack/opencode-core": "workspace:*",
+    "@opencode-extension-stack/opencode-packs": "workspace:*"
+  }
 }

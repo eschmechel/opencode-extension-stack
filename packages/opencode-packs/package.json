@@ -5,5 +5,8 @@
   "bin": {
     "opencode-packs": "./src/cli.js"
   },
-  "exports": "./src/index.js"
+  "exports": "./src/index.js",
+  "dependencies": {
+    "@opencode-extension-stack/opencode-core": "workspace:*"
+  }
 }

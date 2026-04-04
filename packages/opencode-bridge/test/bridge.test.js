@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { ensureStateLayout, loadConfig, loadNotifications, saveConfig } from '../../opencode-core/src/index.js';
 import { jobsShow, runnerOnce } from '../../opencode-kairos/src/index.js';
+import { listPackHistory, showPackInvocation } from '../../opencode-packs/src/index.js';
 
 import {
   bridgeServe,
@@ -102,11 +103,19 @@ test('remoteEnqueue auto-queues when approvalRequired is disabled and detects re
   assert.notEqual(request.runId, null);
   assert.equal(request.packetPack, 'review-remote');
   assert.notEqual(request.packetPath, null);
+  assert.notEqual(request.packetInvocationId, null);
 
   const packet = JSON.parse(await fs.readFile(request.packetPath, 'utf8'));
   assert.equal(packet.remoteRequestId, request.remoteRequestId);
+  assert.equal(packet.packetInvocationId, request.packetInvocationId);
   assert.equal(packet.rendered.pack.name, 'review-remote');
   assert.match(packet.rendered.prompt, /Remote review target:/);
+
+  const invocation = await showPackInvocation(request.packetInvocationId, { cwd: repoRoot });
+  const history = await listPackHistory({ cwd: repoRoot, limit: 5, packName: 'review-remote' });
+  assert.equal(invocation.packName, 'review-remote');
+  assert.equal(invocation.channel, 'remote');
+  assert.equal(history.entries[0].action, 'execute');
 });
 
 test('remoteRevoke cancels a queued remote request when its job has not started', async () => {

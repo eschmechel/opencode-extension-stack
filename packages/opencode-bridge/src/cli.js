@@ -71,6 +71,9 @@ async function runRemote(subcommand, args) {
         if (request.packetPack) {
           printKeyValue('packet pack', request.packetPack);
           printKeyValue('packet', request.packetPath);
+          if (request.packetInvocationId) {
+            printKeyValue('packet invocation', request.packetInvocationId);
+          }
         }
         printKeyValue('prompt', request.prompt);
         return;
@@ -113,6 +116,9 @@ async function runRemote(subcommand, args) {
       if (result.packetPack) {
         printKeyValue('packet pack', result.packetPack);
         printKeyValue('packet', result.packetPath);
+        if (result.packetInvocationId) {
+          printKeyValue('packet invocation', result.packetInvocationId);
+        }
       }
       printKeyValue('prompt', result.prompt);
       return;

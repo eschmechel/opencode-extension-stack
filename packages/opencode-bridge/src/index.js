@@ -18,7 +18,7 @@ import {
   withRepoLock,
   saveJobsState,
 } from '../../opencode-core/src/index.js';
-import { renderPack } from '../../opencode-packs/src/index.js';
+import { executePack } from '../../opencode-packs/src/index.js';
 
 const REMOTE_STATE_VERSION = 1;
 const REMOTE_AUTH_VERSION = 1;
@@ -97,12 +97,14 @@ export async function remoteEnqueue(prompt, options = {}) {
       runId: null,
       packetPath: null,
       packetPack: null,
+      packetInvocationId: null,
     };
 
     if (request.kind === 'review') {
       const packet = await writeRemoteReviewPacket(repoRoot, request, nowIso);
       request.packetPath = packet.packetPath;
       request.packetPack = packet.packetPack;
+      request.packetInvocationId = packet.packetInvocationId;
     }
 
     if (!approvalRequired) {
@@ -513,6 +515,7 @@ function enrichRemoteRequest(repoRoot, request, jobsState, config, authState, no
     approvalLinks,
     packetPath: request.packetPath ? fromRemoteRelative(repoRoot, request.packetPath) : null,
     packetPack: request.packetPack,
+    packetInvocationId: request.packetInvocationId,
     runLogPath: request.runId ? path.join(runDir, 'events.ndjson') : null,
     stdoutPath: request.runId ? path.join(runDir, 'stdout.txt') : null,
     stderrPath: request.runId ? path.join(runDir, 'stderr.txt') : null,
@@ -526,7 +529,13 @@ async function writeRemoteReviewPacket(repoRoot, request, nowIso) {
   await fs.mkdir(packetDir, { recursive: true });
 
   const normalizedRequest = stripReviewCommand(request.prompt);
-  const rendered = renderPack('review-remote', { request: normalizedRequest });
+  const invocation = await executePack('review-remote', {
+    request: normalizedRequest,
+  }, {
+    cwd: repoRoot,
+    channel: 'remote',
+    now: nowIso,
+  });
   const packetPath = path.join(packetDir, `${request.remoteRequestId}.json`);
   await writeJsonAtomic(packetPath, {
     remoteRequestId: request.remoteRequestId,
@@ -534,12 +543,21 @@ async function writeRemoteReviewPacket(repoRoot, request, nowIso) {
     kind: request.kind,
     requestedBy: request.requestedBy,
     prompt: request.prompt,
-    rendered,
+    packetInvocationId: invocation.invocationId,
+    invocationPath: toRemoteRelative(repoRoot, invocation.invocationPath),
+    rendered: {
+      pack: invocation.pack,
+      input: invocation.input,
+      prompt: invocation.prompt,
+      outputContract: invocation.outputContract,
+    },
+    handoff: invocation.handoff,
   });
 
   return {
     packetPath: toRemoteRelative(repoRoot, packetPath),
     packetPack: 'review-remote',
+    packetInvocationId: invocation.invocationId,
   };
 }
 
@@ -1255,6 +1273,7 @@ function parseRemoteRequest(value) {
     runId: typeof value.runId === 'string' && value.runId.trim() ? value.runId.trim() : null,
     packetPath: typeof value.packetPath === 'string' && value.packetPath.trim() ? value.packetPath.trim() : null,
     packetPack: typeof value.packetPack === 'string' && value.packetPack.trim() ? value.packetPack.trim() : null,
+    packetInvocationId: typeof value.packetInvocationId === 'string' && value.packetInvocationId.trim() ? value.packetInvocationId.trim() : null,
   };
 }
 
