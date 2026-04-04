@@ -59,6 +59,10 @@ async function runRemote(subcommand, args) {
         if (request.runId) {
           printKeyValue('run', request.runId);
         }
+        if (request.packetPack) {
+          printKeyValue('packet pack', request.packetPack);
+          printKeyValue('packet', request.packetPath);
+        }
         printKeyValue('prompt', request.prompt);
         return;
       }
@@ -92,6 +96,10 @@ async function runRemote(subcommand, args) {
       printKeyValue('requested by', result.requestedBy);
       if (result.jobId) {
         printKeyValue('job', result.jobId);
+      }
+      if (result.packetPack) {
+        printKeyValue('packet pack', result.packetPack);
+        printKeyValue('packet', result.packetPath);
       }
       printKeyValue('prompt', result.prompt);
       return;

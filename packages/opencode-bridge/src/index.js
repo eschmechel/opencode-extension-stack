@@ -16,6 +16,7 @@ import {
   withRepoLock,
   saveJobsState,
 } from '../../opencode-core/src/index.js';
+import { renderPack } from '../../opencode-packs/src/index.js';
 
 const REMOTE_STATE_VERSION = 1;
 const REMOTE_REQUEST_STATUSES = new Set(['awaiting_approval', 'queued', 'revoked']);
@@ -88,7 +89,15 @@ export async function remoteEnqueue(prompt, options = {}) {
       revokedAt: null,
       jobId: null,
       runId: null,
+      packetPath: null,
+      packetPack: null,
     };
+
+    if (request.kind === 'review') {
+      const packet = await writeRemoteReviewPacket(repoRoot, request, nowIso);
+      request.packetPath = packet.packetPath;
+      request.packetPack = packet.packetPack;
+    }
 
     if (!approvalRequired) {
       const job = await createQueuedJobLocked(repoRoot, jobsState, request.prompt, nowIso, request.remoteRequestId);
@@ -105,6 +114,7 @@ export async function remoteEnqueue(prompt, options = {}) {
       kind: request.kind,
       requestedBy: request.requestedBy,
       jobId: request.jobId,
+      packetPath: request.packetPath,
     });
     await appendNotification(repoRoot, {
       at: nowIso,
@@ -300,10 +310,35 @@ function enrichRemoteRequest(repoRoot, request, jobsState) {
     effectiveStatus,
     jobStatus: job?.status ?? null,
     job,
+    packetPath: request.packetPath ? fromRemoteRelative(repoRoot, request.packetPath) : null,
+    packetPack: request.packetPack,
     runLogPath: request.runId ? path.join(runDir, 'events.ndjson') : null,
     stdoutPath: request.runId ? path.join(runDir, 'stdout.txt') : null,
     stderrPath: request.runId ? path.join(runDir, 'stderr.txt') : null,
     resultPath: request.runId ? path.join(runDir, 'result.json') : null,
+  };
+}
+
+async function writeRemoteReviewPacket(repoRoot, request, nowIso) {
+  const paths = getRemotePaths(repoRoot);
+  const packetDir = path.join(paths.remoteDir, 'packets');
+  await fs.mkdir(packetDir, { recursive: true });
+
+  const normalizedRequest = stripReviewCommand(request.prompt);
+  const rendered = renderPack('review-remote', { request: normalizedRequest });
+  const packetPath = path.join(packetDir, `${request.remoteRequestId}.json`);
+  await writeJsonAtomic(packetPath, {
+    remoteRequestId: request.remoteRequestId,
+    createdAt: nowIso,
+    kind: request.kind,
+    requestedBy: request.requestedBy,
+    prompt: request.prompt,
+    rendered,
+  });
+
+  return {
+    packetPath: toRemoteRelative(repoRoot, packetPath),
+    packetPack: 'review-remote',
   };
 }
 
@@ -347,6 +382,14 @@ function getRemotePaths(repoRoot) {
     requests: path.join(remoteDir, 'requests.json'),
     events: path.join(remoteDir, 'events.ndjson'),
   };
+}
+
+function toRemoteRelative(repoRoot, filePath) {
+  return path.relative(repoRoot, filePath) || '.';
+}
+
+function fromRemoteRelative(repoRoot, relativePath) {
+  return path.resolve(repoRoot, relativePath);
 }
 
 async function loadRemoteState(repoRoot) {
@@ -407,6 +450,8 @@ function parseRemoteRequest(value) {
     revokedAt: normalizeNullableIso(value.revokedAt),
     jobId: typeof value.jobId === 'string' && value.jobId.trim() ? value.jobId.trim() : null,
     runId: typeof value.runId === 'string' && value.runId.trim() ? value.runId.trim() : null,
+    packetPath: typeof value.packetPath === 'string' && value.packetPath.trim() ? value.packetPath.trim() : null,
+    packetPack: typeof value.packetPack === 'string' && value.packetPack.trim() ? value.packetPack.trim() : null,
   };
 }
 
@@ -421,6 +466,13 @@ function detectRemoteKind(prompt, explicitKind) {
   }
 
   return 'job';
+}
+
+function stripReviewCommand(prompt) {
+  return prompt
+    .replace(/^\/review-remote\s+/, '')
+    .replace(/^\/review\s+/, '')
+    .trim() || prompt.trim();
 }
 
 function sortByNewest(left, right) {

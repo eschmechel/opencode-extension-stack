@@ -255,7 +255,7 @@ Each run directory can contain:
 - `/remote approve` turns an approved request into a local Kairos queue job
 - `/remote revoke` revokes pending approvals and can cancel a still-queued remote job before it starts
 - `/remote status` polls request state and follows the linked Kairos job once approved
-- prompts beginning with `/review` or `/review-remote` are tagged as remote review handoffs
+- prompts beginning with `/review` or `/review-remote` are tagged as remote review handoffs and generate a `review-remote` packet under `.opencode/remote/packets/`
 
 `config.json` now supports:
 

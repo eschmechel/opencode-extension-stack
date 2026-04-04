@@ -94,6 +94,13 @@ test('remoteEnqueue auto-queues when approvalRequired is disabled and detects re
   assert.equal(request.requestedBy, 'portal');
   assert.notEqual(request.jobId, null);
   assert.notEqual(request.runId, null);
+  assert.equal(request.packetPack, 'review-remote');
+  assert.notEqual(request.packetPath, null);
+
+  const packet = JSON.parse(await fs.readFile(request.packetPath, 'utf8'));
+  assert.equal(packet.remoteRequestId, request.remoteRequestId);
+  assert.equal(packet.rendered.pack.name, 'review-remote');
+  assert.match(packet.rendered.prompt, /Remote review target:/);
 });
 
 test('remoteRevoke cancels a queued remote request when its job has not started', async () => {
