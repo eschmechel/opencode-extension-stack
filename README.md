@@ -62,7 +62,8 @@ Run memory commands with `pnpm run memory -- ...`.
 
 - `/memory show [topic] [--team <teamId>]`
 - `/memory search <query> [--team <teamId>]`
-- `/memory add <note> --run <runId> [--topic <topic>] [--team <teamId>]`
+- `/memory add <note> (--run <runId> | --worker <workerId>) [--topic <topic>] [--team <teamId>]`
+- `/memory repair <memoryId> (--run <runId> | --worker <workerId>) [--summary <text>] [--team <teamId>]`
 - `/memory rebuild [--team <teamId>]`
 - `/memory compact [--team <teamId>]`
 
@@ -89,6 +90,7 @@ pnpm run orchestrator -- /parallel 2 "compare two implementation approaches"
 pnpm run orchestrator -- /worker start "investigate flaky test output"
 pnpm run orchestrator -- /worker list
 pnpm run memory -- /memory add "Queue retries are delayed by retryAt" --topic "queue retry" --run <run-id>
+pnpm run memory -- /memory add "Worker branch found a safe migration path" --topic migrations --worker <worker-id>
 pnpm run memory -- /memory show
 pnpm run memory -- /memory search retryAt
 pnpm run memory -- /memory add "Release team keeps worker notes separate" --team release-team --topic workers --run <run-id>
@@ -174,7 +176,8 @@ Each run directory can contain:
 - memory entries are stored per topic under `.opencode/memory/topics/*.json`
 - team-local memory namespaces live under `.opencode/memory/team/<teamId>/`
 - `MEMORY.md` is a generated pointer index, rebuilt from topic files
-- `/memory add` currently requires `--run <runId>` and only accepts successful run evidence
+- `/memory add` accepts successful Kairos run evidence or successful detached worker evidence
+- `/memory repair` creates a fresh entry for a stale note, links the old entry to the replacement, and rebinds evidence without deleting audit history
 - all memory commands default to repo-wide memory and can target a team namespace with `--team <teamId>`
 - `/memory compact` refreshes stale markers when backing run artifacts disappear or stop being valid
 - duplicate memory entries are compacted by marking older duplicates stale instead of deleting them

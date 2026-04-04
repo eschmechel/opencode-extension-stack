@@ -84,7 +84,7 @@ export async function memorySearch(query, options = {}) {
       const haystack = normalizeSearchText([
         topicFile.topic,
         entry.summary,
-        ...entry.evidence.map((evidence) => evidence.runId ?? ''),
+        ...entry.evidence.map((evidence) => evidence.runId ?? evidence.workerId ?? ''),
       ].join(' '));
 
       if (!haystack.includes(loweredQuery)) {
@@ -123,17 +123,12 @@ export async function memoryAdd(note, options = {}) {
     throw new Error('A note is required for /memory add.');
   }
 
-  const runId = typeof options.runId === 'string' ? options.runId.trim() : '';
-  if (!runId) {
-    throw new Error('memory add requires --run <runId> so the note is evidence-backed.');
-  }
-
   const repoRoot = await prepareRepo(options.cwd);
   const nowIso = toIso(options.now);
   const namespacePaths = getNamespacePaths(repoRoot, options);
   await ensureNamespaceLayout(namespacePaths);
   const topic = slugifyTopic(options.topic ?? 'general');
-  const evidence = await resolveRunEvidence(repoRoot, runId, nowIso);
+  const evidence = await resolveEvidenceFromOptions(repoRoot, options, nowIso, 'memory add');
 
   return withRepoLock(repoRoot, async () => {
     const topicFile = await loadTopicFile(namespacePaths, topic);
@@ -168,6 +163,74 @@ export async function memoryAdd(note, options = {}) {
       topicPath,
       indexPath: rebuilt.indexPath,
       entry,
+    };
+  });
+}
+
+export async function memoryRepair(memoryId, options = {}) {
+  const trimmedMemoryId = memoryId.trim();
+  if (!trimmedMemoryId) {
+    throw new Error('A memory id is required for /memory repair.');
+  }
+
+  const repoRoot = await prepareRepo(options.cwd);
+  const nowIso = toIso(options.now);
+  const namespacePaths = getNamespacePaths(repoRoot, options);
+  await ensureNamespaceLayout(namespacePaths);
+  const evidence = await resolveEvidenceFromOptions(repoRoot, options, nowIso, 'memory repair');
+
+  return withRepoLock(repoRoot, async () => {
+    const located = await findEntryByMemoryId(namespacePaths, trimmedMemoryId);
+    if (!located) {
+      throw new Error(`Memory entry not found: ${trimmedMemoryId}`);
+    }
+
+    const { topicFile, entry } = located;
+    if (!entry.stale) {
+      throw new Error(`Memory entry ${trimmedMemoryId} is not stale.`);
+    }
+    if (entry.staleReason === 'compacted_duplicate' || entry.staleReason === 'compacted_consolidated') {
+      throw new Error(`Memory entry ${trimmedMemoryId} was compacted, not invalidated; repair is only for evidence-backed stale entries.`);
+    }
+
+    const repairedEntry = {
+      ...createMemoryEntry({
+        topic: entry.topic,
+        createdAt: nowIso,
+        evidence: [evidence],
+        summary: typeof options.summary === 'string' && options.summary.trim() ? options.summary.trim() : entry.summary,
+      }),
+      updatedAt: nowIso,
+      stale: false,
+      staleReason: null,
+      lastValidatedAt: nowIso,
+      entryType: 'note',
+      sourceMemoryIds: [],
+      replacedByMemoryId: null,
+      repairedFromMemoryId: entry.memoryId,
+    };
+
+    entry.stale = true;
+    entry.staleReason = 'repaired';
+    entry.replacedByMemoryId = repairedEntry.memoryId;
+    entry.lastValidatedAt = nowIso;
+    entry.updatedAt = nowIso;
+
+    topicFile.entries.push(repairedEntry);
+    topicFile.updatedAt = nowIso;
+    const topicPath = getTopicPath(namespacePaths, topicFile.topic);
+    await saveTopicFile(topicPath, topicFile);
+    const rebuilt = await rebuildIndexLocked(repoRoot, namespacePaths, nowIso);
+
+    return {
+      repoRoot,
+      namespace: namespacePaths.namespace,
+      teamId: namespacePaths.teamId,
+      topic: topicFile.topic,
+      topicPath,
+      indexPath: rebuilt.indexPath,
+      repaired: repairedEntry,
+      superseded: entry,
     };
   });
 }
@@ -374,6 +437,7 @@ function parseTopicEntry(value, topic) {
       ? value.sourceMemoryIds.filter((entry) => typeof entry === 'string' && entry.trim())
       : [],
     replacedByMemoryId: typeof value.replacedByMemoryId === 'string' ? value.replacedByMemoryId : null,
+    repairedFromMemoryId: typeof value.repairedFromMemoryId === 'string' ? value.repairedFromMemoryId : null,
     evidence,
   };
 }
@@ -383,20 +447,33 @@ function parseEvidence(value) {
     return null;
   }
 
-  if (value.kind !== 'run') {
-    return null;
+  if (value.kind === 'run') {
+    return {
+      kind: 'run',
+      runId: typeof value.runId === 'string' ? value.runId : null,
+      resultPath: typeof value.resultPath === 'string' ? value.resultPath : null,
+      stdoutPath: typeof value.stdoutPath === 'string' ? value.stdoutPath : null,
+      stderrPath: typeof value.stderrPath === 'string' ? value.stderrPath : null,
+      eventPath: typeof value.eventPath === 'string' ? value.eventPath : null,
+      exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
+      capturedAt: normalizeNullableIso(value.capturedAt),
+    };
   }
 
-  return {
-    kind: 'run',
-    runId: typeof value.runId === 'string' ? value.runId : null,
-    resultPath: typeof value.resultPath === 'string' ? value.resultPath : null,
-    stdoutPath: typeof value.stdoutPath === 'string' ? value.stdoutPath : null,
-    stderrPath: typeof value.stderrPath === 'string' ? value.stderrPath : null,
-    eventPath: typeof value.eventPath === 'string' ? value.eventPath : null,
-    exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
-    capturedAt: normalizeNullableIso(value.capturedAt),
-  };
+  if (value.kind === 'worker') {
+    return {
+      kind: 'worker',
+      workerId: typeof value.workerId === 'string' ? value.workerId : null,
+      statePath: typeof value.statePath === 'string' ? value.statePath : null,
+      stdoutPath: typeof value.stdoutPath === 'string' ? value.stdoutPath : null,
+      stderrPath: typeof value.stderrPath === 'string' ? value.stderrPath : null,
+      exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
+      runCount: typeof value.runCount === 'number' ? value.runCount : null,
+      capturedAt: normalizeNullableIso(value.capturedAt),
+    };
+  }
+
+  return null;
 }
 
 function createEmptyTopicFile(topic, nowIso) {
@@ -428,7 +505,7 @@ function buildTopicSummary(namespacePaths, topicFile) {
 }
 
 async function evaluateEntryStaleState(repoRoot, entry, nowIso) {
-  if (entry.stale && (entry.staleReason === 'compacted_duplicate' || entry.staleReason === 'compacted_consolidated')) {
+  if (entry.stale && ['compacted_duplicate', 'compacted_consolidated', 'repaired'].includes(entry.staleReason)) {
     return {
       stale: true,
       staleReason: entry.staleReason,
@@ -467,10 +544,21 @@ async function evaluateEntryStaleState(repoRoot, entry, nowIso) {
 }
 
 async function validateEvidence(repoRoot, evidence) {
-  if (evidence.kind !== 'run' || !evidence.resultPath) {
-    return { stale: true, reason: 'missing_evidence' };
+  if (evidence.kind === 'run') {
+    return validateRunEvidence(repoRoot, evidence);
   }
 
+  if (evidence.kind === 'worker') {
+    return validateWorkerEvidence(repoRoot, evidence);
+  }
+
+  return { stale: true, reason: 'missing_evidence' };
+}
+
+async function validateRunEvidence(repoRoot, evidence) {
+  if (!evidence.resultPath) {
+    return { stale: true, reason: 'missing_evidence' };
+  }
   const resultPath = fromRepoRelative(repoRoot, evidence.resultPath);
   let result;
   try {
@@ -484,6 +572,29 @@ async function validateEvidence(repoRoot, evidence) {
 
   if (typeof result.exitCode !== 'number' || result.exitCode !== 0) {
     return { stale: true, reason: 'run_not_successful' };
+  }
+
+  return { stale: false, reason: null };
+}
+
+async function validateWorkerEvidence(repoRoot, evidence) {
+  if (!evidence.statePath) {
+    return { stale: true, reason: 'missing_evidence' };
+  }
+
+  const statePath = fromRepoRelative(repoRoot, evidence.statePath);
+  let worker;
+  try {
+    worker = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { stale: true, reason: 'missing_worker_state' };
+    }
+    return { stale: true, reason: 'invalid_worker_state' };
+  }
+
+  if (!isSuccessfulWorkerState(worker)) {
+    return { stale: true, reason: 'worker_not_successful' };
   }
 
   return { stale: false, reason: null };
@@ -522,6 +633,54 @@ async function resolveRunEvidence(repoRoot, runId, capturedAt) {
     exitCode: result.exitCode,
     capturedAt,
   };
+}
+
+async function resolveWorkerEvidence(repoRoot, workerId, capturedAt) {
+  const workerPaths = getWorkerEvidencePaths(repoRoot, workerId);
+
+  let worker;
+  try {
+    worker = JSON.parse(await fs.readFile(workerPaths.statePath, 'utf8'));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error(`Worker evidence not found: ${workerId}`);
+    }
+
+    throw new Error(`Failed to read worker state for ${workerId}: ${error.message}`);
+  }
+
+  if (!isSuccessfulWorkerState(worker)) {
+    throw new Error(`Worker ${workerId} is not in a successful completed state and cannot back a memory entry.`);
+  }
+
+  return {
+    kind: 'worker',
+    workerId,
+    statePath: toRepoRelative(repoRoot, workerPaths.statePath),
+    stdoutPath: toRepoRelative(repoRoot, workerPaths.stdoutPath),
+    stderrPath: toRepoRelative(repoRoot, workerPaths.stderrPath),
+    exitCode: typeof worker.lastExitCode === 'number' ? worker.lastExitCode : 0,
+    runCount: typeof worker.runCount === 'number' ? worker.runCount : 0,
+    capturedAt,
+  };
+}
+
+async function resolveEvidenceFromOptions(repoRoot, options, capturedAt, actionName) {
+  const runId = typeof options.runId === 'string' ? options.runId.trim() : '';
+  const workerId = typeof options.workerId === 'string' ? options.workerId.trim() : '';
+
+  if (!runId && !workerId) {
+    throw new Error(`${actionName} requires --run <runId> or --worker <workerId> so the note is evidence-backed.`);
+  }
+  if (runId && workerId) {
+    throw new Error(`${actionName} accepts exactly one evidence source: --run <runId> or --worker <workerId>.`);
+  }
+
+  if (runId) {
+    return resolveRunEvidence(repoRoot, runId, capturedAt);
+  }
+
+  return resolveWorkerEvidence(repoRoot, workerId, capturedAt);
 }
 
 function buildIndexMarkdown(namespacePaths, topics, nowIso) {
@@ -565,6 +724,18 @@ async function prepareRepo(cwd) {
   return repoRoot;
 }
 
+async function findEntryByMemoryId(namespacePaths, memoryId) {
+  const topicFiles = await loadAllTopicFiles(namespacePaths);
+  for (const topicFile of topicFiles) {
+    const entry = topicFile.entries.find((candidate) => candidate.memoryId === memoryId);
+    if (entry) {
+      return { topicFile, entry };
+    }
+  }
+
+  return null;
+}
+
 function getNamespacePaths(repoRoot, options = {}) {
   const paths = getOpencodePaths(repoRoot);
   if (!options.teamId) {
@@ -595,6 +766,17 @@ async function ensureNamespaceLayout(namespacePaths) {
 
 function getTopicPath(namespacePaths, topic) {
   return path.join(namespacePaths.topicsDir, `${slugifyTopic(topic)}.json`);
+}
+
+function getWorkerEvidencePaths(repoRoot, workerId) {
+  const workersDir = getOpencodePaths(repoRoot).workersDir;
+  const rootDir = path.join(workersDir, workerId);
+  return {
+    rootDir,
+    statePath: path.join(rootDir, 'worker.json'),
+    stdoutPath: path.join(rootDir, 'current.stdout.txt'),
+    stderrPath: path.join(rootDir, 'current.stderr.txt'),
+  };
 }
 
 function toRepoRelative(repoRoot, filePath) {
@@ -628,9 +810,21 @@ function slugifyRequired(value, fieldName) {
   return slug;
 }
 
+function isSuccessfulWorkerState(worker) {
+  if (!isPlainObject(worker)) {
+    return false;
+  }
+
+  const status = typeof worker.status === 'string' ? worker.status : '';
+  const runCount = typeof worker.runCount === 'number' ? worker.runCount : 0;
+  const lastExitCode = typeof worker.lastExitCode === 'number' ? worker.lastExitCode : null;
+
+  return runCount > 0 && lastExitCode === 0 && ['idle', 'blocked', 'stopped'].includes(status);
+}
+
 function buildCompactKey(entry) {
   const evidenceKey = entry.evidence
-    .map((evidence) => `${evidence.kind}:${evidence.runId ?? evidence.resultPath ?? 'unknown'}`)
+    .map(getEvidenceIdentity)
     .sort()
     .join('|');
   return `${normalizeSearchText(entry.summary)}::${evidenceKey}`;
@@ -719,7 +913,7 @@ function dedupeEvidence(evidence) {
   const deduped = [];
 
   for (const entry of evidence) {
-    const key = `${entry.kind}:${entry.runId ?? entry.resultPath ?? 'unknown'}`;
+    const key = getEvidenceIdentity(entry);
     if (seen.has(key)) {
       continue;
     }
@@ -728,6 +922,16 @@ function dedupeEvidence(evidence) {
   }
 
   return deduped;
+}
+
+function getEvidenceIdentity(evidence) {
+  if (evidence.kind === 'run') {
+    return `${evidence.kind}:${evidence.runId ?? evidence.resultPath ?? 'unknown'}`;
+  }
+  if (evidence.kind === 'worker') {
+    return `${evidence.kind}:${evidence.workerId ?? evidence.statePath ?? 'unknown'}`;
+  }
+  return `${evidence.kind}:unknown`;
 }
 
 function sameStringArray(left, right) {

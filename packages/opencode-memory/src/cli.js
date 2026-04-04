@@ -4,6 +4,7 @@ import {
   getMemoryPaths,
   memoryAdd,
   memoryCompact,
+  memoryRepair,
   memoryRebuild,
   memorySearch,
   memoryShow,
@@ -75,9 +76,15 @@ async function runMemory(subcommand, args) {
         if (entry.replacedByMemoryId) {
           console.log(`  replaced by: ${entry.replacedByMemoryId}`);
         }
+        if (entry.repairedFromMemoryId) {
+          console.log(`  repaired from: ${entry.repairedFromMemoryId}`);
+        }
         for (const evidence of entry.evidence) {
           if (evidence.kind === 'run' && evidence.runId) {
             console.log(`  evidence run: ${evidence.runId}`);
+          }
+          if (evidence.kind === 'worker' && evidence.workerId) {
+            console.log(`  evidence worker: ${evidence.workerId}`);
           }
         }
       }
@@ -99,6 +106,7 @@ async function runMemory(subcommand, args) {
       const result = await memoryAdd(parsed.note, {
         topic: parsed.topic,
         runId: parsed.runId,
+        workerId: parsed.workerId,
         teamId: parsed.teamId ?? parsedCommon.teamId,
       });
       printHeader(`Added ${result.entry.memoryId}`);
@@ -108,8 +116,38 @@ async function runMemory(subcommand, args) {
       printKeyValue('topic', result.topic);
       printKeyValue('file', result.topicPath);
       printKeyValue('index', result.indexPath);
-      printKeyValue('run', parsed.runId);
+      if (parsed.runId) {
+        printKeyValue('run', parsed.runId);
+      }
+      if (parsed.workerId) {
+        printKeyValue('worker', parsed.workerId);
+      }
       printKeyValue('summary', result.entry.summary);
+      return;
+    }
+    case 'repair': {
+      const parsed = parseRepairArgs(parsedCommon.args);
+      const result = await memoryRepair(parsed.memoryId, {
+        runId: parsed.runId,
+        workerId: parsed.workerId,
+        summary: parsed.summary,
+        teamId: parsed.teamId ?? parsedCommon.teamId,
+      });
+      printHeader(`Repaired ${result.repaired.memoryId}`);
+      if (result.teamId) {
+        printKeyValue('team', result.teamId);
+      }
+      printKeyValue('topic', result.topic);
+      printKeyValue('file', result.topicPath);
+      printKeyValue('index', result.indexPath);
+      printKeyValue('superseded', result.superseded.memoryId);
+      if (parsed.runId) {
+        printKeyValue('run', parsed.runId);
+      }
+      if (parsed.workerId) {
+        printKeyValue('worker', parsed.workerId);
+      }
+      printKeyValue('summary', result.repaired.summary);
       return;
     }
     case 'rebuild': {
@@ -132,7 +170,7 @@ async function runMemory(subcommand, args) {
       return;
     }
     default:
-      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--team <teamId>] | /memory add <note> --run <runId> [--topic <topic>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
+      throw new Error('Usage: /memory show [topic] [--team <teamId>] | /memory search <query> [--team <teamId>] | /memory add <note> (--run <runId> | --worker <workerId>) [--topic <topic>] [--team <teamId>] | /memory repair <memoryId> (--run <runId> | --worker <workerId>) [--summary <text>] [--team <teamId>] | /memory rebuild [--team <teamId>] | /memory compact [--team <teamId>]');
   }
 }
 
@@ -155,6 +193,7 @@ function parseAddArgs(args) {
   const noteParts = [];
   let topic = 'general';
   let runId = '';
+  let workerId = '';
   let teamId = null;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -166,6 +205,11 @@ function parseAddArgs(args) {
     }
     if (value === '--run') {
       runId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--worker') {
+      workerId = args[index + 1] ?? '';
       index += 1;
       continue;
     }
@@ -181,7 +225,52 @@ function parseAddArgs(args) {
     note: noteParts.join(' ').trim(),
     topic,
     runId,
+    workerId,
     teamId,
+  };
+}
+
+function parseRepairArgs(args) {
+  const memoryId = args[0] ?? '';
+  const summaryParts = [];
+  let runId = '';
+  let workerId = '';
+  let teamId = null;
+
+  for (let index = 1; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--run') {
+      runId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--worker') {
+      workerId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--team') {
+      teamId = args[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
+    if (value === '--summary') {
+      index += 1;
+      while (index < args.length && !args[index].startsWith('--')) {
+        summaryParts.push(args[index]);
+        index += 1;
+      }
+      index -= 1;
+      continue;
+    }
+  }
+
+  return {
+    memoryId,
+    runId,
+    workerId,
+    teamId,
+    summary: summaryParts.join(' ').trim(),
   };
 }
 
@@ -221,7 +310,8 @@ function printHelp() {
   console.log('Usage:');
   console.log('  pnpm run memory -- /memory show [topic] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory search <query> [--team <teamId>]');
-  console.log('  pnpm run memory -- /memory add <note> --run <runId> [--topic <topic>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory add <note> (--run <runId> | --worker <workerId>) [--topic <topic>] [--team <teamId>]');
+  console.log('  pnpm run memory -- /memory repair <memoryId> (--run <runId> | --worker <workerId>) [--summary <text>] [--team <teamId>]');
   console.log('  pnpm run memory -- /memory rebuild [--team <teamId>]');
   console.log('  pnpm run memory -- /memory compact [--team <teamId>]');
   console.log('  pnpm run memory -- paths [--team <teamId>]');
