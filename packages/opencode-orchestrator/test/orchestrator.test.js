@@ -34,6 +34,15 @@ async function createTempRepo() {
   return repoRoot;
 }
 
+test.after(async () => {
+  const entries = await fs.readdir(os.tmpdir()).catch(() => []);
+  for (const entry of entries) {
+    if (entry.startsWith('opencode-orchestrator-')) {
+      await fs.rm(path.join(os.tmpdir(), entry), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+});
+
 test('workerStart creates inspectable worker state', async () => {
   const repoRoot = await createTempRepo();
   const now = new Date().toISOString();
@@ -349,7 +358,7 @@ test('workerShow and teamShow expose supervision output previews', async () => {
   });
 
   const worker = await workerShow(team.workerIds[0], { cwd: repoRoot, now: '2026-04-04T09:00:00.000Z' });
-  await runWorkerLoop({
+  const loopPromise = runWorkerLoop({
     repoRoot,
     workerId: worker.workerId,
     workerToken: worker.workerToken,
@@ -359,6 +368,14 @@ test('workerShow and teamShow expose supervision output previews', async () => {
       stderr: '',
     }),
   });
+
+  await waitFor(async () => {
+    const shown = await workerShow(worker.workerId, { cwd: repoRoot });
+    return shown.runCount >= 1;
+  });
+
+  await workerStop(worker.workerId, { cwd: repoRoot });
+  await loopPromise;
 
   const shownWorker = await workerShow(worker.workerId, { cwd: repoRoot, now: '2026-04-04T09:01:00.000Z' });
   const shownTeam = await teamShow(team.teamId, { cwd: repoRoot, now: '2026-04-04T09:01:00.000Z' });

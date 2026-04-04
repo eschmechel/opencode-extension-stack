@@ -561,6 +561,12 @@ export async function runWorkerLoop(options) {
       try {
         if (typeof options.executePrompt === 'function') {
           execution = await options.executePrompt({ prompt: nextPrompt.prompt, repoRoot, workerId, runId });
+          if (execution.stdout) {
+            await fs.writeFile(currentPaths.currentStdoutPath, execution.stdout, 'utf8');
+          }
+          if (execution.stderr) {
+            await fs.writeFile(currentPaths.currentStderrPath, execution.stderr, 'utf8');
+          }
         } else {
           execution = await spawnWorkerPrompt(repoRoot, nextPrompt.prompt, currentPaths, () => {
             activeChild = null;
