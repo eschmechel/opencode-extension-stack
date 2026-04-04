@@ -16,6 +16,7 @@ import {
   showPackInvocation,
   validatePackOutput,
 } from '../src/index.js';
+import { servePacksUi } from '../src/ui-server.js';
 
 async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-packs-'));
@@ -158,4 +159,60 @@ test('completePackInvocation validates output and updates history', async () => 
   assert.equal(history.entries.length, 2);
   assert.equal(history.entries[0].action, 'complete');
   assert.equal(history.entries[1].action, 'execute');
+});
+
+test('servePacksUi serves the pack studio and API endpoints', async () => {
+  const repoRoot = await createTempRepo();
+  const server = await servePacksUi({ cwd: repoRoot, port: 0 });
+
+  try {
+    const html = await fetch(`${server.baseUrl}/`).then((response) => response.text());
+    const packs = await fetch(`${server.baseUrl}/api/packs`).then((response) => response.json());
+    const rendered = await fetch(`${server.baseUrl}/api/render`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        packName: 'review',
+        request: 'Review the latest change set.',
+        context: 'Focus on queue/job lifecycle.',
+        constraints: ['Findings first'],
+      }),
+    }).then((response) => response.json());
+    const invocation = await fetch(`${server.baseUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        packName: 'review-remote',
+        request: 'Review remote branch changes.',
+        channel: 'remote',
+      }),
+    }).then((response) => response.json());
+    const history = await fetch(`${server.baseUrl}/api/history?limit=5`).then((response) => response.json());
+    const validation = await fetch(`${server.baseUrl}/api/validate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        packName: 'triage',
+        output: {
+          category: 'bug',
+          priority: 'p1',
+          ownerRole: 'runtime maintainer',
+          summary: 'Looks like a regression.',
+          nextActions: ['Reproduce it'],
+        },
+      }),
+    }).then((response) => response.json());
+    const shown = await fetch(`${server.baseUrl}/api/invocations/${encodeURIComponent(invocation.invocationId)}`).then((response) => response.json());
+
+    assert.match(html, /Pack Studio/);
+    assert.equal(packs.packs.length >= 5, true);
+    assert.match(rendered.prompt, /Review the latest change set/);
+    assert.equal(invocation.channel, 'remote');
+    assert.match(invocation.handoff.suggestedCommand, /--channel remote/);
+    assert.equal(history.count, 1);
+    assert.equal(validation.valid, true);
+    assert.equal(shown.invocationId, invocation.invocationId);
+  } finally {
+    await server.close();
+  }
 });

@@ -12,6 +12,7 @@ import {
   showPackInvocation,
   validatePackOutput,
 } from './index.js';
+import { servePacksUi } from './ui-server.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -160,6 +161,23 @@ async function runPacks(args) {
       }
       return;
     }
+    case 'ui': {
+      const parsed = parseUiArgs(args.slice(1));
+      const server = await servePacksUi(parsed);
+      printHeader('Pack UI');
+      printKeyValue('base url', server.baseUrl);
+      printKeyValue('host', server.host);
+      printKeyValue('port', server.port);
+
+      const shutdown = async () => {
+        await server.close().catch(() => {});
+        process.exit(0);
+      };
+      process.once('SIGINT', shutdown);
+      process.once('SIGTERM', shutdown);
+      await new Promise(() => {});
+      return;
+    }
     case 'validate': {
       const packName = args[1] ?? '';
       const output = args.slice(2).join(' ').trim();
@@ -281,6 +299,25 @@ function parseHistoryArgs(args) {
   };
 }
 
+function parseUiArgs(args) {
+  let port = 0;
+  let host = '127.0.0.1';
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (/^\d+$/.test(value)) {
+      port = Number(value);
+      continue;
+    }
+    if (value === '--host') {
+      host = args[index + 1] ?? host;
+      index += 1;
+    }
+  }
+
+  return { host, port };
+}
+
 function printRenderedPack(rendered) {
   printHeader(`Pack ${rendered.pack.name}`);
   printKeyValue('title', rendered.pack.title);
@@ -317,6 +354,7 @@ function printHelp() {
   console.log('  pnpm run packs -- /packs complete <invocationId> (--output-json <json> | --output-file <path>) [--json]');
   console.log('  pnpm run packs -- /packs invocation <invocationId>');
   console.log('  pnpm run packs -- /packs history [limit] [--pack <pack>] [--action <action>]');
+  console.log('  pnpm run packs -- /packs ui [port] [--host <host>]');
   console.log('  pnpm run packs -- /packs validate <pack> <json>');
   console.log('  pnpm run packs -- /ultraplan <request>');
   console.log('  pnpm run packs -- /review <request>');

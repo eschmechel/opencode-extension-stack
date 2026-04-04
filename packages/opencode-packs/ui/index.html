@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pack Studio</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar panel">
+        <div class="panel-head">
+          <p class="eyebrow">Phase 4</p>
+          <h1>Pack Studio</h1>
+          <p class="lede">Browse packs, shape input, validate output, inspect history, and preview remote handoffs.</p>
+        </div>
+        <div class="section">
+          <label class="field-label" for="pack-search">Filter packs</label>
+          <input id="pack-search" class="text-input" type="search" placeholder="Search packs">
+        </div>
+        <div id="pack-list" class="pack-list"></div>
+      </aside>
+
+      <main class="workspace">
+        <section class="hero panel">
+          <div>
+            <p class="eyebrow">Selected Pack</p>
+            <h2 id="pack-title">Select a pack</h2>
+            <p id="pack-description" class="lede">Choose a pack from the left rail to inspect its contract and build a request.</p>
+          </div>
+          <div class="hero-meta">
+            <div><span class="meta-key">Agent</span><span id="pack-agent" class="meta-value">-</span></div>
+            <div><span class="meta-key">Mode</span><span id="pack-mode" class="meta-value">-</span></div>
+            <div><span class="meta-key">Examples</span><span id="pack-examples-count" class="meta-value">0</span></div>
+          </div>
+        </section>
+
+        <section class="grid-two">
+          <section class="panel form-panel">
+            <div class="panel-head compact">
+              <h3>Input Builder</h3>
+              <p>Draft the request packet and render or execute it.</p>
+            </div>
+            <label class="field-label" for="request">Request</label>
+            <textarea id="request" class="text-area" rows="4" placeholder="Describe what you want the pack to do."></textarea>
+            <label class="field-label" for="context">Context</label>
+            <textarea id="context" class="text-area" rows="4" placeholder="Optional repo or branch context."></textarea>
+            <label class="field-label" for="constraints">Constraints</label>
+            <textarea id="constraints" class="text-area" rows="3" placeholder="One constraint per line."></textarea>
+            <label class="field-label" for="channel">Channel</label>
+            <select id="channel" class="select-input">
+              <option value="local">local</option>
+              <option value="remote">remote</option>
+            </select>
+            <div class="button-row">
+              <button id="render-button" class="action-button primary">Render Packet</button>
+              <button id="execute-button" class="action-button">Prepare Invocation</button>
+            </div>
+          </section>
+
+          <section class="panel contract-panel">
+            <div class="panel-head compact">
+              <h3>Contract & Validation</h3>
+              <p>Inspect the output contract and validate a candidate response.</p>
+            </div>
+            <pre id="contract-view" class="code-block muted">Select a pack to view its contract.</pre>
+            <label class="field-label" for="output-json">Candidate JSON</label>
+            <textarea id="output-json" class="text-area code-input" rows="10" placeholder='{"summary":"..."}'></textarea>
+            <div class="button-row">
+              <button id="validate-button" class="action-button">Validate Output</button>
+              <button id="complete-button" class="action-button subtle">Complete Selected Invocation</button>
+            </div>
+            <div id="validation-result" class="status-box muted">Validation feedback will appear here.</div>
+          </section>
+        </section>
+
+        <section class="grid-two lower-grid">
+          <section class="panel output-panel">
+            <div class="panel-head compact">
+              <h3>Render & Handoff Preview</h3>
+              <p>Rendered prompt, examples, and remote handoff packet preview.</p>
+            </div>
+            <div class="subtabs">
+              <button data-tab="render" class="tab-button active">Render</button>
+              <button data-tab="examples" class="tab-button">Examples</button>
+              <button data-tab="handoff" class="tab-button">Handoff</button>
+            </div>
+            <div id="render-tab" class="tab-panel active">
+              <pre id="rendered-prompt" class="code-block muted">Render output will appear here.</pre>
+            </div>
+            <div id="examples-tab" class="tab-panel">
+              <div id="examples-view" class="examples-view muted">Pack examples will appear here.</div>
+            </div>
+            <div id="handoff-tab" class="tab-panel">
+              <pre id="handoff-view" class="code-block muted">Remote handoff preview will appear here after execution.</pre>
+            </div>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="panel-head compact">
+              <h3>Invocation History</h3>
+              <p>Review prepared/completed invocations and inspect details.</p>
+            </div>
+            <div class="history-controls">
+              <button id="refresh-history" class="action-button subtle">Refresh</button>
+            </div>
+            <div id="history-list" class="history-list"></div>
+            <pre id="invocation-detail" class="code-block muted">Select an invocation to inspect its packet.</pre>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
