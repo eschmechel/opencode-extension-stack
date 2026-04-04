@@ -6,8 +6,20 @@ import path from 'node:path';
 
 import { ensureStateLayout, getOpencodePaths } from '../packages/opencode-core/src/index.js';
 import { remoteApprove, remoteEnqueue, remoteStatus } from '../packages/opencode-bridge/src/index.js';
-import { jobsShow, runnerOnce } from '../packages/opencode-kairos/src/index.js';
-import { memoryAdd, memoryShow } from '../packages/opencode-memory/src/index.js';
+import { jobsShow, queueAdd, runnerOnce } from '../packages/opencode-kairos/src/index.js';
+import { memoryAdd, memoryRepair, memoryShow } from '../packages/opencode-memory/src/index.js';
+import {
+  runWorkerLoop,
+  teamCreate,
+  teamMemoryCompact,
+  teamMemoryContradictions,
+  teamMemorySearch,
+  teamMemoryShow,
+  teamMemoryStale,
+  teamTemplateSave,
+  workerShow,
+  workerStop,
+} from '../packages/opencode-orchestrator/src/index.js';
 import {
   completePackInvocation,
   executePack,
@@ -127,3 +139,158 @@ test('remote review can be approved, executed by Kairos, and captured into skept
   assert.match(topicView.topicPath, /remote-review\.json$/);
   assert.equal(typeof (await fs.readFile(path.join(paths.runsDir, approved.runId, 'result.json'), 'utf8')), 'string');
 });
+
+test('template-launched teams can produce worker-backed team memory and contradiction checks', async () => {
+  const repoRoot = await createTempRepo();
+  await teamTemplateSave('policy-template', {
+    cwd: repoRoot,
+    now: '2026-04-04T16:20:00.000Z',
+    count: 2,
+    prompt: 'investigate protected branch policy',
+    maxConcurrentWorkers: 2,
+  });
+
+  const team = await teamCreate(undefined, '', {
+    cwd: repoRoot,
+    now: '2026-04-04T16:21:00.000Z',
+    templateName: 'policy-template',
+    spawnWorkerProcess: () => ({ pid: process.pid }),
+  });
+
+  const outputs = new Map([
+    [team.workers[0].workerId, 'allow protected branch unattended edits after approval'],
+    [team.workers[1].workerId, 'deny protected branch unattended edits after approval'],
+  ]);
+
+  const loops = team.workers.map((worker) => runWorkerLoop({
+    repoRoot,
+    workerId: worker.workerId,
+    workerToken: worker.workerToken,
+    executePrompt: async () => ({
+      exitCode: 0,
+      stdout: outputs.get(worker.workerId),
+      stderr: '',
+    }),
+  }));
+
+  for (const worker of team.workers) {
+    await waitFor(async () => {
+      const shown = await workerShow(worker.workerId, { cwd: repoRoot });
+      return shown.runCount >= 1;
+    });
+    await workerStop(worker.workerId, { cwd: repoRoot, now: '2026-04-04T16:22:00.000Z' });
+  }
+  await Promise.all(loops);
+
+  await memoryAdd('Allow protected branch unattended edits after approval.', {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    topic: 'Protected Branch Policy',
+    workerId: team.workers[0].workerId,
+    now: '2026-04-04T16:23:00.000Z',
+  });
+  await memoryAdd('Deny protected branch unattended edits after approval.', {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    topic: 'Protected Branch Policy',
+    workerId: team.workers[1].workerId,
+    now: '2026-04-04T16:24:00.000Z',
+  });
+
+  const shown = await teamMemoryShow(team.teamId, 'Protected Branch Policy', { cwd: repoRoot });
+  const search = await teamMemorySearch(team.teamId, 'protected branch', { cwd: repoRoot });
+  const contradictions = await teamMemoryContradictions(team.teamId, { cwd: repoRoot });
+
+  assert.equal(team.templateName, 'policy-template');
+  assert.equal(shown.summary.entryCount, 2);
+  assert.equal(search.count, 2);
+  assert.equal(contradictions.count, 1);
+  assert.equal(contradictions.contradictionAlerts[0].topic, 'protected-branch-policy');
+});
+
+test('stale team memory can be repaired from a real worker run after a Kairos-backed note goes stale', async () => {
+  const repoRoot = await createTempRepo();
+  const team = await teamCreate(1, 'repair stale incident memory', {
+    cwd: repoRoot,
+    now: '2026-04-04T16:30:00.000Z',
+    spawnWorkerProcess: () => ({ pid: process.pid }),
+  });
+
+  const queued = await queueAdd('capture incident memory seed', {
+    cwd: repoRoot,
+    now: '2026-04-04T16:31:00.000Z',
+  });
+  await runnerOnce({
+    cwd: repoRoot,
+    now: '2026-04-04T16:32:00.000Z',
+    executeJob: async () => ({
+      command: 'opencode',
+      args: ['run', queued.prompt],
+      exitCode: 0,
+      stdout: 'initial incident note',
+      stderr: '',
+    }),
+  });
+
+  const added = await memoryAdd('Incident note captured from unattended queue execution.', {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    topic: 'Incident Memory',
+    runId: queued.runId,
+    now: '2026-04-04T16:33:00.000Z',
+  });
+
+  const paths = getOpencodePaths(repoRoot);
+  await fs.rm(path.join(paths.runsDir, queued.runId, 'result.json'));
+  await teamMemoryCompact(team.teamId, { cwd: repoRoot, now: '2026-04-04T16:33:30.000Z' });
+
+  let stale = await teamMemoryStale(team.teamId, { cwd: repoRoot, repairableOnly: true });
+  assert.equal(stale.count, 1);
+  assert.equal(stale.entries[0].memoryId, added.entry.memoryId);
+
+  const worker = team.workers[0];
+  const loop = runWorkerLoop({
+    repoRoot,
+    workerId: worker.workerId,
+    workerToken: worker.workerToken,
+    executePrompt: async () => ({
+      exitCode: 0,
+      stdout: 'fresh repaired worker-backed incident note',
+      stderr: '',
+    }),
+  });
+  await waitFor(async () => {
+    const shown = await workerShow(worker.workerId, { cwd: repoRoot });
+    return shown.runCount >= 1;
+  });
+  await workerStop(worker.workerId, { cwd: repoRoot, now: '2026-04-04T16:34:00.000Z' });
+  await loop;
+
+  const repaired = await memoryRepair(added.entry.memoryId, {
+    cwd: repoRoot,
+    teamId: team.teamId,
+    workerId: worker.workerId,
+    summary: 'Incident note refreshed from team worker evidence.',
+    now: '2026-04-04T16:35:00.000Z',
+  });
+
+  const shown = await teamMemoryShow(team.teamId, 'Incident Memory', { cwd: repoRoot });
+  stale = await teamMemoryStale(team.teamId, { cwd: repoRoot, repairableOnly: true });
+
+  assert.equal(repaired.repaired.repairedFromMemoryId, added.entry.memoryId);
+  assert.equal(shown.summary.entryCount, 2);
+  assert.equal(shown.summary.activeCount, 1);
+  assert.equal(shown.entries.some((entry) => entry.summary === 'Incident note refreshed from team worker evidence.'), true);
+  assert.equal(stale.count, 0);
+});
+
+async function waitFor(check, timeoutMs = 5_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for condition.');
+}
