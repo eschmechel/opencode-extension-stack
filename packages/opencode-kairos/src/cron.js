@@ -24,6 +24,8 @@ export function getNextCronOccurrence(schedule, fromDate = new Date()) {
   const days = parseField(dayField, 1, 31, 'day of month');
   const months = parseField(monthField, 1, 12, 'month');
   const weekdays = parseField(weekdayField, 0, 7, 'day of week').map((value) => (value === 7 ? 0 : value));
+  const dayMatchesAsWildcard = dayField === '*';
+  const weekdayMatchesAsWildcard = weekdayField === '*';
 
   const start = new Date(fromDate);
   start.setSeconds(0, 0);
@@ -36,15 +38,29 @@ export function getNextCronOccurrence(schedule, fromDate = new Date()) {
     if (
       minutes.includes(candidate.getMinutes()) &&
       hours.includes(candidate.getHours()) &&
-      days.includes(candidate.getDate()) &&
       months.includes(candidate.getMonth() + 1) &&
-      weekdays.includes(candidate.getDay())
+      matchesCalendarDay(candidate, days, weekdays, dayMatchesAsWildcard, weekdayMatchesAsWildcard)
     ) {
       return candidate.toISOString();
     }
   }
 
   throw new Error(`Could not resolve a future occurrence for schedule: ${schedule}`);
+}
+
+function matchesCalendarDay(candidate, days, weekdays, dayMatchesAsWildcard, weekdayMatchesAsWildcard) {
+  const dayMatches = days.includes(candidate.getDate());
+  const weekdayMatches = weekdays.includes(candidate.getDay());
+
+  if (dayMatchesAsWildcard) {
+    return weekdayMatches;
+  }
+
+  if (weekdayMatchesAsWildcard) {
+    return dayMatches;
+  }
+
+  return dayMatches || weekdayMatches;
 }
 
 function parseField(field, min, max, label) {
