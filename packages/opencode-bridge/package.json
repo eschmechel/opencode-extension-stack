@@ -2,5 +2,8 @@
   "name": "@opencode-extension-stack/opencode-bridge",
   "version": "0.0.0",
   "type": "module",
+  "bin": {
+    "opencode-bridge": "./src/cli.js"
+  },
   "exports": "./src/index.js"
 }

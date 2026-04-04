@@ -38,6 +38,10 @@ export function defaultConfig() {
     notifications: {
       console: true,
     },
+    remote: {
+      approvalRequired: true,
+      maxStatusRequests: 20,
+    },
     memory: defaultMemoryPolicy(),
     retention: {
       workers: defaultRetentionPolicy(),
@@ -169,6 +173,10 @@ export function parseConfig(value) {
     },
     notifications: {
       console: readBoolean(input.notifications?.console, defaults.notifications.console, 'notifications.console'),
+    },
+    remote: {
+      approvalRequired: readBoolean(input.remote?.approvalRequired, defaults.remote.approvalRequired, 'remote.approvalRequired'),
+      maxStatusRequests: readInteger(input.remote?.maxStatusRequests, defaults.remote.maxStatusRequests, 'remote.maxStatusRequests', 1),
     },
     memory: parseMemoryPolicy(input.memory, defaults.memory, 'memory'),
     retention: {

@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "bridge": "node packages/opencode-bridge/src/cli.js",
     "kairos": "node packages/opencode-kairos/src/cli.js",
     "memory": "node packages/opencode-memory/src/cli.js",
     "orchestrator": "node packages/opencode-orchestrator/src/cli.js",
