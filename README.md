@@ -124,7 +124,28 @@ Run pack commands with `pnpm run packs -- ...`.
 - `/triage <request>`
 - `/handoff <request>`
 
-Run remote bridge commands with `pnpm run bridge -- ...`.
+## OpenCode Plugin
+
+The extension stack ships as an OpenCode plugin that exposes all commands as custom tools callable from within any OpenCode session. The plugin also auto-triggers the job runner on `session.idle` so queued jobs process automatically after each session.
+
+**Setup:**
+```bash
+# Run once from the extension stack repo
+node packages/opencode-opencode-plugin/setup.js
+
+# Restart OpenCode to load the plugin
+```
+
+**What it does:** After setup, OpenCode gains ~50 custom tools including `queue_add`, `memory_search`, `worker_start`, `team_create`, `packs_execute`, `ultraplan`, `review_pack`, and more. The AI can call these autonomously based on conversation context.
+
+**Optional:** Set `EXTENSION_STACK_PATH` if your extension stack is not at the default location:
+```bash
+export EXTENSION_STACK_PATH=/path/to/your/opencode-extension-stack
+```
+
+See `packages/opencode-opencode-plugin/README.md` for the full tool reference.
+
+## Run remote bridge commands with `pnpm run bridge -- ...`.
 
 - `/remote status [id]`
 - `/remote auth [show]`
