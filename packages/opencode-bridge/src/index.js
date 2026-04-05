@@ -25,6 +25,26 @@ const REMOTE_AUTH_VERSION = 1;
 const TELEGRAM_STATE_VERSION = 1;
 const REMOTE_REQUEST_STATUSES = new Set(['awaiting_approval', 'queued', 'revoked']);
 
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024; // 1MB
+const MAX_SSE_CONNECTIONS = 50;
+const SSE_HARD_TIMEOUT_MS = 60000; // 1 minute per SSE session
+const SERVER_TIMEOUT_MS = 30000;
+const SERVER_HEADERS_TIMEOUT_MS = 35000;
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 100;
+const TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60000;
+const TELEGRAM_WEBHOOK_RATE_LIMIT_MAX = 30;
+
+const SECURITY_RESPONSE_HEADERS = Object.freeze({
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+});
+
+let activeSseConnections = 0;
+const rateLimitMap = new Map();
+const telegramWebhookRateLimitMap = new Map();
+
 export async function remoteStatus(remoteRequestId = '', options = {}) {
   const repoRoot = await prepareRepo(options.cwd);
   const config = await loadConfig(repoRoot);
@@ -401,12 +421,18 @@ export async function bridgeServe(options = {}) {
   const port = Number.isInteger(options.port) ? options.port : Number.parseInt(String(options.port ?? '0'), 10) || 0;
 
   const server = http.createServer((request, response) => {
+    for (const [name, value] of Object.entries(SECURITY_RESPONSE_HEADERS)) {
+      response.setHeader(name, value);
+    }
+    request.setTimeout(SERVER_TIMEOUT_MS);
     handleBridgeHttpRequest(repoRoot, request, response).catch((error) => {
       if (!response.headersSent) {
         writeJsonResponse(response, 500, { error: error instanceof Error ? error.message : String(error) });
       }
     });
   });
+  server.timeout = SERVER_TIMEOUT_MS;
+  server.headersTimeout = SERVER_HEADERS_TIMEOUT_MS;
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -630,6 +656,15 @@ async function handleBridgeHttpRequest(repoRoot, request, response) {
   const authState = await ensureRemoteAuthState(repoRoot);
   const config = await loadConfig(repoRoot);
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+
+  const clientIp = request.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    ?? request.socket.remoteAddress ?? 'unknown';
+  const rateLimitKey = `${clientIp}:${request.method}:${url.pathname}`;
+  if (!checkRateLimit(rateLimitKey, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS)) {
+    writeJsonResponse(response, 429, { error: 'Too many requests. Please try again later.' });
+    return;
+  }
+
   if (request.method === 'GET' && url.pathname === '/health') {
     writeJsonResponse(response, 200, { ok: true });
     return;
@@ -642,6 +677,10 @@ async function handleBridgeHttpRequest(repoRoot, request, response) {
     }
     if (!isTelegramWebhookAuthorized(request, config.remote.telegram.webhookSecret)) {
       writeJsonResponse(response, 401, { error: 'Invalid Telegram webhook secret.' });
+      return;
+    }
+    if (!checkTelegramWebhookRateLimit(clientIp)) {
+      writeJsonResponse(response, 429, { error: 'Too many Telegram webhook requests. Please try again later.' });
       return;
     }
     const update = await readJsonRequestBody(request);
@@ -911,7 +950,12 @@ function isTelegramWebhookAuthorized(request, expectedSecret) {
 
 async function readJsonRequestBody(request) {
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
+    totalBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+      throw new Error('Request body exceeds maximum allowed size');
+    }
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   if (chunks.length === 0) {
@@ -927,6 +971,17 @@ function writeJsonResponse(response, statusCode, value) {
 }
 
 async function streamRemoteEvents(repoRoot, request, response, context) {
+  if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
+    response.writeHead(503);
+    response.end('Too many SSE connections. Please try again later.');
+    return;
+  }
+  activeSseConnections++;
+
+  const hardTimeout = setTimeout(() => {
+    response.end();
+  }, SSE_HARD_TIMEOUT_MS);
+
   const remotePaths = getRemotePaths(repoRoot);
   response.statusCode = 200;
   response.setHeader('content-type', 'text/event-stream; charset=utf-8');
@@ -970,9 +1025,11 @@ async function streamRemoteEvents(repoRoot, request, response, context) {
   }, 15000);
 
   const cleanup = () => {
+    clearTimeout(hardTimeout);
     clearInterval(interval);
     clearInterval(heartbeat);
     response.end();
+    activeSseConnections--;
   };
   request.on('close', cleanup);
   response.on('close', cleanup);
@@ -981,6 +1038,34 @@ async function streamRemoteEvents(repoRoot, request, response, context) {
 function writeSseEvent(response, event, payload) {
   response.write(`event: ${event}\n`);
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function checkRateLimit(key, windowMs, maxRequests) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now - entry.windowStart > windowMs) {
+    rateLimitMap.set(key, { windowStart: now, count: 1 });
+    return true;
+  }
+  if (entry.count >= maxRequests) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
+}
+
+function checkTelegramWebhookRateLimit(clientIp) {
+  const now = Date.now();
+  const entry = telegramWebhookRateLimitMap.get(clientIp);
+  if (!entry || now - entry.windowStart > TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_MS) {
+    telegramWebhookRateLimitMap.set(clientIp, { windowStart: now, count: 1 });
+    return true;
+  }
+  if (entry.count >= TELEGRAM_WEBHOOK_RATE_LIMIT_MAX) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
 }
 
 async function getFileSize(filePath) {

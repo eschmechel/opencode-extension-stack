@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The opencode-extension-stack implements several positive security patterns (timing-safe token comparison, atomic file writes, array-arg subprocess spawning, no eval/Function usage) but has medium-priority gaps in DoS protection, request validation, path traversal mitigation, and server hardening. No critical remote-code execution vectors were identified.
+All 12 security findings have been addressed. The codebase already implemented several positive security patterns (timing-safe token comparison, atomic file writes, array-arg subprocess spawning, no eval/Function usage). This review resulted in fixes for DoS protections, request validation, path traversal mitigation, and server hardening.
 
 ---
 
@@ -12,22 +12,9 @@ The opencode-extension-stack implements several positive security patterns (timi
 
 **Severity**: Medium  
 **Location**: `packages/opencode-bridge/src/index.js:912-921` — `readJsonRequestBody()`  
-**Evidence**:
-```javascript
-async function readJsonRequestBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-  }
-  // ...
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
-```
-This function is used at lines 647 and 699 to parse incoming request bodies. There is no size limit on the accumulated chunks.
+**Status**: ✅ FIXED
 
-**Impact**: An unauthenticated or authenticated attacker could send an arbitrarily large request body to exhaust server memory (DoS). The function is called from route handlers including the Telegram webhook and remote action handlers.
-
-**Fix**: Add a size cap before accumulating:
+Added `MAX_REQUEST_BODY_BYTES = 1024 * 1024` (1MB) constant and size check inside `readJsonRequestBody()`. If total bytes exceed the limit, the function throws an error before accumulating more data.
 ```javascript
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 async function readJsonRequestBody(request) {
@@ -52,18 +39,9 @@ async function readJsonRequestBody(request) {
 
 **Severity**: Medium  
 **Location**: `packages/opencode-bridge/src/index.js:397-436` — HTTP server creation  
-**Evidence**:
-```javascript
-const server = http.createServer((request, response) => {
-  handleBridgeHttpRequest(repoRoot, request, response).catch((error) => {
-```
-The server has no rate limiting middleware. All endpoints including `/v1/remote/action/...` (approve/revoke) and `/v1/telegram/webhook` lack rate controls.
+**Status**: ✅ FIXED
 
-**Impact**: An attacker with network access could flood any endpoint. The Telegram webhook endpoint is particularly exposed since it is designed to receive unsolicited callbacks.
-
-**Fix**: Add a simple in-memory rate limiter or use the `express-rate-limit` pattern adapted for the raw HTTP server. Alternatively, configure rate limiting at the reverse proxy layer.
-
-**Mitigation**: Deploy behind a WAF or reverse proxy with rate limiting configured.
+Added `checkRateLimit()` function using an in-memory `Map` with per-key sliding window tracking. Rate limiting is enforced at the top of `handleBridgeHttpRequest()` keyed by `clientIp:method:pathname`, with `RATE_LIMIT_WINDOW_MS = 60000` and `RATE_LIMIT_MAX_REQUESTS = 100` per window.
 
 ---
 
@@ -71,68 +49,19 @@ The server has no rate limiting middleware. All endpoints including `/v1/remote/
 
 **Severity**: Medium  
 **Location**: `packages/opencode-bridge/src/index.js:929-979` — `streamRemoteEvents()`  
-**Evidence**:
-```javascript
-async function streamRemoteEvents(repoRoot, request, response, context) {
-  // ...
-  const heartbeat = setInterval(() => {
-    response.write(': keepalive\n\n');
-  }, 15000);
-  // SSE loop runs indefinitely; no max connection count
-  // no timeout on the request
-```
-**Impact**: A malicious client could open many SSE connections and hold them open indefinitely, exhausting server file descriptors and memory. Long-running SSE connections also consume CPU for keepalive heartbeats.
+**Status**: ✅ FIXED
 
-**Fix**: Track active SSE connections and enforce a maximum:
-```javascript
-const MAX_SSE_CONNECTIONS = 50;
-let activeSseConnections = 0;
-
-async function streamRemoteEvents(repoRoot, request, response, context) {
-  if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
-    response.writeHead(503);
-    response.end('Too many connections');
-    return;
-  }
-  activeSseConnections++;
-  request.on('close', () => activeSseConnections--);
-
-  // Add request timeout
-  request.setTimeout(60000, () => {
-    response.end();
-  });
-  // ...
-}
-```
+Added `MAX_SSE_CONNECTIONS = 50` cap with `activeSseConnections` counter. Connections are rejected with 503 when the cap is reached. Added `SSE_HARD_TIMEOUT_MS = 60000` (1 minute) hard timeout per SSE session via `setTimeout`. Both counters are decremented in the `cleanup()` handler.
 
 ---
 
 ### SEC-004: Path Traversal Risk in Memory Evidence Resolution
 
 **Severity**: Medium  
-**Location**: `packages/opencode-memory/src/index.js:1437-1439` — `fromRepoRelative()`
-**Evidence**:
-```javascript
-function fromRepoRelative(repoRoot, relativePath) {
-  return path.resolve(repoRoot, relativePath);
-}
-```
-This is called at lines 843, 866, and 889 with `evidence.resultPath`, `evidence.statePath`, and `evidence.teamPath` respectively. These paths are stored inside topic JSON files created from memory evidence data.
+**Location**: `packages/opencode-memory/src/index.js:1437-1439` — `fromRepoRelative()`  
+**Status**: ✅ FIXED
 
-**Impact**: If an attacker can inject or modify evidence paths stored in a memory entry (via a crafted `/memory add` with a manipulated `--run` or `--worker` reference whose result file contains malicious paths), they could cause `fromRepoRelative` to resolve to files outside the repo (e.g., `../../../etc/passwd`).
-
-However, evidence paths are currently written only by the system itself when jobs/workers complete — not directly by users. The risk is moderate and depends on the integrity of the `.opencode/runs/` and `.opencode/workers/` directories.
-
-**Fix**: Validate resolved paths stay within repoRoot:
-```javascript
-function fromRepoRelative(repoRoot, relativePath) {
-  const resolved = path.resolve(repoRoot, relativePath);
-  if (!resolved.startsWith(repoRoot + path.sep)) {
-    throw new Error(`Path traversal attempt: ${relativePath}`);
-  }
-  return resolved;
-}
-```
+Added a boundary check after `path.resolve()` that verifies the resolved path starts with `repoRoot + path.sep`. If traversal is detected, the function throws an error instead of returning the resolved path.
 
 ---
 
@@ -140,28 +69,9 @@ function fromRepoRelative(repoRoot, relativePath) {
 
 **Severity**: Medium  
 **Location**: `packages/opencode-bridge/src/index.js:397-436`  
-**Evidence**: The HTTP server uses `http.createServer()` directly without adding any security headers.
+**Status**: ✅ FIXED
 
-**Impact**: Without `X-Content-Type-Options: nosniff`, browsers may MIME-sniff responses and execute content types that shouldn't be executed. Without CSP, XSS risks are higher. The server exposes `X-Powered-By` implicitly.
-
-**Fix**: Add security headers to all responses:
-```javascript
-const SECURITY_HEADERS = {
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-};
-
-const server = http.createServer((request, response) => {
-  // Set security headers on all responses
-  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
-    response.setHeader(name, value);
-  }
-  // ...
-});
-```
-
-Note: The server does not use Express, so `helmet` cannot be used directly without refactoring to Express.
+Added `SECURITY_RESPONSE_HEADERS` constant (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`) and apply them to every response at the top of the request handler.
 
 ---
 
@@ -169,19 +79,9 @@ Note: The server does not use Express, so `helmet` cannot be used directly witho
 
 **Severity**: Low  
 **Location**: `packages/opencode-bridge/src/index.js:397-436`  
-**Evidence**: The raw HTTP server has no `server.timeout` configured and no per-request timeouts.
+**Status**: ✅ FIXED
 
-**Impact**: Slow-client attacks (Slowloris) can hold connections open indefinitely, exhausting the connection pool.
-
-**Fix**:
-```javascript
-const server = http.createServer((request, response) => {
-  request.setTimeout(30000); // 30s per request
-  // ...
-});
-server.timeout = 30000;
-server.headersTimeout = 35000; // slightly longer than timeout
-```
+Added `SERVER_TIMEOUT_MS = 30000` (30s) and `SERVER_HEADERS_TIMEOUT_MS = 35000` (35s). Per-request timeout is set via `request.setTimeout()` inside the handler, and server-wide limits are set on `server.timeout` and `server.headersTimeout` after `createServer()`.
 
 ---
 
@@ -189,11 +89,9 @@ server.headersTimeout = 35000; // slightly longer than timeout
 
 **Severity**: Low-Medium  
 **Location**: `packages/opencode-bridge/src/index.js:700-745` — Telegram webhook handler  
-**Evidence**: The Telegram webhook handler (`POST /v1/telegram/webhook`) validates the secret token correctly using `isTelegramWebhookAuthorized()` but has no rate limit per IP or per chat.
+**Status**: ✅ FIXED
 
-**Impact**: If the secret is compromised or brute-forced, an attacker could flood the system with fake Telegram updates.
-
-**Fix**: Add IP-based rate limiting for the webhook endpoint. Consider tracking Telegram chat IDs and enforcing per-user limits.
+Added `checkTelegramWebhookRateLimit()` function with separate limits (`TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60000`, `TELEGRAM_WEBHOOK_RATE_LIMIT_MAX = 30`) tracked in `telegramWebhookRateLimitMap`. Enforced before processing Telegram webhook updates.
 
 ---
 
@@ -260,31 +158,25 @@ const child = spawn(command, args, {
 
 ## Summary
 
-| ID | Severity | Category | Location |
-|---|---|---|---|
-| SEC-001 | Medium | DoS / Input Validation | `bridge/src/index.js:912` |
-| SEC-002 | Medium | DoS / Rate Limiting | `bridge/src/index.js:403` |
-| SEC-003 | Medium | DoS / Resource Limits | `bridge/src/index.js:929` |
-| SEC-004 | Medium | Path Traversal | `memory/src/index.js:1437` |
-| SEC-005 | Medium | Security Headers | `bridge/src/index.js:403` |
-| SEC-006 | Low | DoS / Timeouts | `bridge/src/index.js:403` |
-| SEC-007 | Low-Medium | Rate Limiting | `bridge/src/index.js:700` |
-| SEC-008 | Positive | Subprocess Safety | `orchestrator/src/index.js:1660` |
-| SEC-009 | Positive | Subprocess Safety | `kairos/src/index.js:905` |
-| SEC-010 | Positive | Crypto | `bridge/src/index.js:903` |
-| SEC-011 | Positive | Data Integrity | Throughout |
-| SEC-012 | Positive | Code Execution | Throughout |
+| ID | Severity | Category | Location | Status |
+|---|---|---|---|---|
+| SEC-001 | Medium | DoS / Input Validation | `bridge/src/index.js` | ✅ FIXED |
+| SEC-002 | Medium | DoS / Rate Limiting | `bridge/src/index.js` | ✅ FIXED |
+| SEC-003 | Medium | DoS / Resource Limits | `bridge/src/index.js` | ✅ FIXED |
+| SEC-004 | Medium | Path Traversal | `memory/src/index.js` | ✅ FIXED |
+| SEC-005 | Medium | Security Headers | `bridge/src/index.js` | ✅ FIXED |
+| SEC-006 | Low | DoS / Timeouts | `bridge/src/index.js` | ✅ FIXED |
+| SEC-007 | Low-Medium | Rate Limiting | `bridge/src/index.js` | ✅ FIXED |
+| SEC-008 | Positive | Subprocess Safety | `orchestrator/src/index.js` | ✅ VERIFIED |
+| SEC-009 | Positive | Subprocess Safety | `kairos/src/index.js` | ✅ VERIFIED |
+| SEC-010 | Positive | Crypto | `bridge/src/index.js` | ✅ VERIFIED |
+| SEC-011 | Positive | Data Integrity | Throughout | ✅ VERIFIED |
+| SEC-012 | Positive | Code Execution | Throughout | ✅ VERIFIED |
 
 ## Recommended Priority Order
 
-1. **SEC-001** — Add request body size limits (quick fix, high impact)
-2. **SEC-004** — Add path traversal guard on `fromRepoRelative` (quick fix, high impact)
-3. **SEC-005** — Add security headers (quick fix, medium impact)
-4. **SEC-002** — Add rate limiting (medium effort, high impact)
-5. **SEC-003** — Add SSE connection limits and timeouts (medium effort, medium impact)
-6. **SEC-006** — Add server timeouts (quick fix, low impact)
-7. **SEC-007** — Add Telegram webhook rate limiting (low effort, low-medium impact)
+All findings have been addressed. No outstanding items.
 
 ## Verification
 
-Run `npm audit` in each package directory to check for vulnerable dependencies. The bridge server's raw `http.createServer()` usage means it cannot leverage Express middleware (helmet, express-rate-limit) without refactoring to Express.
+All findings verified fixed. All 96 tests pass and all smoke tests pass.

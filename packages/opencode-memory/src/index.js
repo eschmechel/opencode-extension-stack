@@ -1435,7 +1435,12 @@ function toDisplayRelative(rootDir, filePath) {
 }
 
 function fromRepoRelative(repoRoot, relativePath) {
-  return path.resolve(repoRoot, relativePath);
+  const resolved = path.resolve(repoRoot, relativePath);
+  const normalizedRoot = path.resolve(repoRoot) + path.sep;
+  if (!resolved.startsWith(normalizedRoot)) {
+    throw new Error(`Path traversal attempt detected: ${relativePath}`);
+  }
+  return resolved;
 }
 
 function slugifyTopic(topic) {
