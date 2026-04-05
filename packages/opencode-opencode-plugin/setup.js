@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '../..');
-const PLUGIN_SRC = resolve(ROOT, 'packages/opencode-opencode-plugin/src');
+const PLUGIN_PKG = resolve(ROOT, 'packages/opencode-opencode-plugin');
 const PLUGIN_DEST = resolve(process.env.HOME, '.config/opencode/plugins/opencode-opencode-plugin');
 const CONFIG_PATH = resolve(process.env.HOME, '.config/opencode/opencode.jsonc');
 const GLOBAL_MODULES = resolve(process.env.HOME, '.config/opencode/node_modules');
@@ -13,7 +13,14 @@ const GLOBAL_MODULES = resolve(process.env.HOME, '.config/opencode/node_modules'
 console.log('Installing opencode-opencode-plugin...');
 
 mkdirSync(PLUGIN_DEST, { recursive: true });
-cpSync(PLUGIN_SRC, PLUGIN_DEST, { recursive: true });
+cpSync(resolve(PLUGIN_PKG, 'src'), PLUGIN_DEST, { recursive: true });
+writeFileSync(resolve(PLUGIN_DEST, 'package.json'), JSON.stringify({
+  name: 'opencode-opencode-plugin',
+  version: '0.1.0',
+  type: 'module',
+  main: './index.js',
+  exports: './index.js',
+}, null, 2) + '\n');
 console.log(`  Copied plugin to ${PLUGIN_DEST}`);
 
 mkdirSync(resolve(PLUGIN_DEST, 'node_modules/@opencode-ai'), { recursive: true });
