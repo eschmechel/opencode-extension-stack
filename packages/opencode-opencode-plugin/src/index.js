@@ -17,7 +17,7 @@ async function triggerDaemon() {
   }
 }
 
-const plugin = async () => {
+export const OpencodeExtensionPlugin = async (ctx) => {
   return {
     tool: {
       ...kairos,
@@ -33,6 +33,3 @@ const plugin = async () => {
     },
   };
 };
-
-export default plugin;
-export { plugin };
