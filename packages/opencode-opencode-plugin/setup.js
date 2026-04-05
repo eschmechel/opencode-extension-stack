@@ -1,19 +1,30 @@
 #!/usr/bin/env node
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { cpSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '../..');
 const PLUGIN_SRC = resolve(ROOT, 'packages/opencode-opencode-plugin/src');
 const PLUGIN_DEST = resolve(process.env.HOME, '.config/opencode/plugins/opencode-opencode-plugin');
 const CONFIG_PATH = resolve(process.env.HOME, '.config/opencode/opencode.jsonc');
+const GLOBAL_MODULES = resolve(process.env.HOME, '.config/opencode/node_modules');
 
 console.log('Installing opencode-opencode-plugin...');
 
 mkdirSync(PLUGIN_DEST, { recursive: true });
 cpSync(PLUGIN_SRC, PLUGIN_DEST, { recursive: true });
 console.log(`  Copied plugin to ${PLUGIN_DEST}`);
+
+mkdirSync(resolve(PLUGIN_DEST, 'node_modules/@opencode-ai'), { recursive: true });
+try {
+  symlinkSync(resolve(GLOBAL_MODULES, '@opencode-ai/plugin'), resolve(PLUGIN_DEST, 'node_modules/@opencode-ai/plugin'));
+  symlinkSync(resolve(GLOBAL_MODULES, '@opencode-ai/sdk'), resolve(PLUGIN_DEST, 'node_modules/@opencode-ai/sdk'));
+  symlinkSync(resolve(GLOBAL_MODULES, 'zod'), resolve(PLUGIN_DEST, 'node_modules/zod'));
+  console.log('  Linked dependencies');
+} catch (err) {
+  if (err.code !== 'EEXIST') console.error('  Warning:', err.message);
+}
 
 let config;
 try {
